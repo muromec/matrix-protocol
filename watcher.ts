@@ -21,6 +21,7 @@
 
 import { MatrixClient, MatrixError, type MatrixConfig, type MatrixEvent, type SyncResponse } from "./client.ts";
 import { MatrixMessage } from "./message.ts";
+import { loadSyncToken, saveSyncToken } from "./sync-token.ts";
 
 // ── types ──────────────────────────────────────────────────────────────────
 
@@ -37,6 +38,22 @@ export interface WatcherConfig {
 
   /** Delay (ms) before reconnecting after a disconnect. Default 5_000. */
   reconnectDelay?: number;
+
+  /**
+   * Filesystem path for persisting the /sync `next_batch` token.
+   *
+   * When set, the watcher saves the token after every successful
+   * /sync response and restores it on the next start.  This means
+   * restarts and reconnects only fetch events that arrived after
+   * the last processed sync — no replay of old messages.
+   *
+   * If the file doesn't exist on first start, the watcher does
+   * an initial sync (no `since`), then saves the token.
+   *
+   * If omitted, every reconnect starts from an initial sync,
+   * which replays all timeline events from all joined rooms.
+   */
+  syncTokenPath?: string;
 }
 
 export interface WatcherEvent {
@@ -57,6 +74,9 @@ export class MatrixWatcher extends EventTarget {
   /** Set of event IDs we've already processed (dedup).  Capped at 10k. */
   #seenEvents = new Set<string>();
   #maxSeen = 10_000;
+
+  /** Current /sync `next_batch` token, persisted to `syncTokenPath`. */
+  #syncToken: string | undefined;
 
   constructor(config: WatcherConfig) {
     super();
@@ -90,11 +110,23 @@ export class MatrixWatcher extends EventTarget {
 
         this.#emit({ type: "connected" });
 
-        // Initial sync: get a `next_batch` token.  Use a short timeout
-        // so we don't block for 30s on first connect.
-        const initResp = await this.#client.sync(undefined, 5000);
+        // Restore the saved sync token if available (survives restarts).
+        if (this.#syncToken === undefined) {
+          this.#syncToken = await loadSyncToken(this.#config.syncTokenPath);
+        }
+
+        // Use the saved token to skip already-processed events.
+        // If this is the very first run, since stays undefined and
+        // we do a full initial sync.
+        since = this.#syncToken;
+
+        const initResp = await this.#client.sync(since, since ? undefined : 5000);
         this.#processSync(initResp);
         since = initResp.next_batch;
+
+        // Persist the new token immediately so a crash doesn't lose it.
+        this.#syncToken = since;
+        await saveSyncToken(this.#config.syncTokenPath, since);
 
         if (signal.aborted) break;
 
@@ -104,6 +136,10 @@ export class MatrixWatcher extends EventTarget {
             const resp = await this.#client.sync(since, syncTimeout);
             this.#processSync(resp);
             since = resp.next_batch;
+
+            // Persist the token after every successful sync.
+            this.#syncToken = since;
+            await saveSyncToken(this.#config.syncTokenPath, since);
           } catch (err) {
             // Classify: is this a recoverable transport error or a
             // fatal auth/server error?
@@ -247,6 +283,8 @@ export class MatrixWatcher extends EventTarget {
     });
   }
 }
+
+
 
 // ── error classification ──────────────────────────────────────────────────
 
