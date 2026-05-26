@@ -1,0 +1,8 @@
+{
+  "name": "matrix-connector",
+  "version": "0.1.0",
+  "description": "Zero-dependency Matrix CS API client for bot use — login, sync, send, room management",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts"
+}
