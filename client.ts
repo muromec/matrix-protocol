@@ -283,6 +283,17 @@ export class MatrixClient {
   }
 
   /**
+   * Set the bot's own presence status.
+   *
+   * `presence` is one of: "online", "offline", "unavailable".
+   */
+  async setPresence(presence: string): Promise<void> {
+    const url =
+      `${this.#baseUrl}/_matrix/client/v3/presence/${encodeURIComponent(this.#userId)}/status`;
+    await request("PUT", url, { presence }, this.#accessToken, this.#requestTimeout);
+  }
+
+  /**
    * Leave a room.
    */
   async leave(roomId: string): Promise<void> {

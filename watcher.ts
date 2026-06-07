@@ -110,6 +110,9 @@ export class MatrixWatcher extends EventTarget {
 
         this.#emit({ type: "connected" });
 
+        // Announce ourselves as online so clients see a green indicator.
+        this.#client.setPresence("online").catch(() => {});
+
         // Restore the saved sync token if available (survives restarts).
         if (this.#syncToken === undefined) {
           this.#syncToken = await loadSyncToken(this.#config.syncTokenPath);
