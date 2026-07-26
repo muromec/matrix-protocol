@@ -114,6 +114,11 @@ export class MatrixWatcher extends EventTarget {
         // Announce ourselves as online so clients see a green indicator.
         this.#client.setPresence("online").catch(() => {});
 
+        // Fetch m.direct on connect — the incremental /sync (with saved
+        // since token) won't include account_data unless it changed.
+        // We need this to seed the DM detection map immediately.
+        this.#fetchDirects();
+
         // Restore the saved sync token if available (survives restarts).
         if (this.#syncToken === undefined) {
           this.#syncToken = await loadSyncToken(this.#config.syncTokenPath);
@@ -255,6 +260,26 @@ export class MatrixWatcher extends EventTarget {
   }
 
   // ── helpers ─────────────────────────────────────────────────────────────
+
+  /**
+   * Fetch m.direct explicitly and seed the #directs map.
+   * Called on connect to ensure DM detection works from the start —
+   * the incremental /sync response may not include account_data.
+   */
+  async #fetchDirects(): Promise<void> {
+    if (!this.#client) return;
+    try {
+      const raw = await this.#client.getAccountData('m.direct');
+      const content = raw as Record<string, string[]>;
+      for (const [mxid, roomIds] of Object.entries(content)) {
+        for (const roomId of roomIds) {
+          this.#directs.set(roomId, mxid);
+        }
+      }
+    } catch {
+      // m.direct may not exist (404) — fine, no DMs configured.
+    }
+  }
 
   /**
    * Parse account_data events for m.direct and rebuild the
