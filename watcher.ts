@@ -163,7 +163,7 @@ export class MatrixWatcher extends EventTarget {
         }
 
         break; // signal.aborted → exit cleanly
-      } catch {
+      } catch (err) {
         if (signal.aborted) break;
         this.#emit({ type: "error", error: err as Error });
       }
