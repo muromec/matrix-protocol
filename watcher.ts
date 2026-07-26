@@ -114,10 +114,11 @@ export class MatrixWatcher extends EventTarget {
         // Announce ourselves as online so clients see a green indicator.
         this.#client.setPresence("online").catch(() => {});
 
-        // Fetch m.direct on connect — the incremental /sync (with saved
-        // since token) won't include account_data unless it changed.
-        // We need this to seed the DM detection map immediately.
-        this.#fetchDirects();
+        // Fetch m.direct before processing any messages — the
+        // incremental /sync (with saved since token) won't include
+        // account_data unless it changed.  Without this, the first
+        // messages after reconnection won't detect DMs.
+        await this.#fetchDirects();
 
         // Restore the saved sync token if available (survives restarts).
         if (this.#syncToken === undefined) {
