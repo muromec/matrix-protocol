@@ -272,13 +272,15 @@ export class MatrixWatcher extends EventTarget {
     try {
       const raw = await this.#client.getAccountData('m.direct');
       const content = raw as Record<string, string[]>;
+      console.log('[watcher] m.direct fetch result:', JSON.stringify(content));
       for (const [mxid, roomIds] of Object.entries(content)) {
         for (const roomId of roomIds) {
           this.#directs.set(roomId, mxid);
         }
       }
-    } catch {
+    } catch (err) {
       // m.direct may not exist (404) — fine, no DMs configured.
+      console.log('[watcher] m.direct fetch failed:', (err as Error).message);
     }
   }
 
