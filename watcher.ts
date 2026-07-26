@@ -492,6 +492,10 @@ export class MatrixWatcher extends EventTarget {
  * 400 (bad request — probably a logic bug).
  */
 function isRecoverable(err: unknown): boolean {
+  if (!err) {
+    return false;
+  }
+
   if (err instanceof MatrixError) {
     // Transport-level Matrix errors from our client.
     if (err.errcode === "M_REQUEST_TIMEOUT") return true;
