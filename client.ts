@@ -294,6 +294,19 @@ export class MatrixClient {
   }
 
   /**
+   * Send a typing notification to a room.
+   *
+   * `typing` — true to start typing, false to stop.
+   * `timeoutMs` — how long before the server considers the typing
+   *               stopped if no further notification arrives (default 15_000).
+   */
+  async sendTyping(roomId: string, typing: boolean, timeoutMs = 15_000): Promise<void> {
+    const url =
+      `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/typing/${encodeURIComponent(this.#userId)}`;
+    await request("PUT", url, { typing, timeout: timeoutMs }, this.#accessToken, this.#requestTimeout);
+  }
+
+  /**
    * Leave a room.
    */
   async leave(roomId: string): Promise<void> {

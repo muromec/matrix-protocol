@@ -436,3 +436,44 @@ describe("connection errors", () => {
     expect((err as MatrixError).errcode).toBe("M_REQUEST_TIMEOUT");
   });
 });
+
+// ── sendTyping ───────────────────────────────────────────────────────────────
+
+describe("sendTyping", () => {
+  it("sends typing=true with correct URL and body", async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+
+    srv.enqueue(200, {});
+    await client.sendTyping("!room1:matrix.org", true);
+
+    const req = srv.lastRequest;
+    expect(req?.method).toBe("PUT");
+    expect(req?.path).toContain("/typing/");
+    expect(req?.path).toContain("!room1%3Amatrix.org");
+    const body = JSON.parse(req?.body ?? "{}");
+    expect(body.typing).toBe(true);
+    expect(body.timeout).toBe(15_000);
+  });
+
+  it("sends typing=false to stop typing", async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+
+    srv.enqueue(200, {});
+    await client.sendTyping("!room1:matrix.org", false, 30_000);
+
+    const body = JSON.parse(srv.lastRequest?.body ?? "{}");
+    expect(body.typing).toBe(false);
+    expect(body.timeout).toBe(30_000);
+  });
+
+  it("throws MatrixError on server error", async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+
+    srv.enqueue(500, { errcode: "M_UNKNOWN", error: "boom" });
+    await expect(client.sendTyping("!room1:matrix.org", true))
+      .rejects.toThrow(MatrixError);
+  });
+});
