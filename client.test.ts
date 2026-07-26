@@ -520,6 +520,42 @@ describe("getJoinedRooms", () => {
   });
 });
 
+describe("getJoinedMembers", () => {
+  it("returns member list for a room", async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, {
+      joined: {
+        "@butler:matrix.org": { display_name: "Butler" },
+        "@alice:matrix.org": { display_name: "Alice" },
+      },
+    });
+
+    const members = await client.getJoinedMembers("!room1:matrix.org");
+    expect(Object.keys(members)).toEqual(["@butler:matrix.org", "@alice:matrix.org"]);
+    expect(members["@alice:matrix.org"].display_name).toBe("Alice");
+
+    const req = srv.lastRequest;
+    expect(req?.method).toBe("GET");
+    expect(req?.path).toContain("/rooms/!room1%3Amatrix.org/joined_members");
+  });
+
+  it("detects this as a DM (exactly 2 members)", async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, {
+      joined: {
+        "@bot:matrix.org": {},
+        "@alice:matrix.org": {},
+      },
+    });
+
+    const members = await client.getJoinedMembers("!dm:matrix.org");
+    expect(Object.keys(members).length).toBe(2);
+    // The caller (watcher) uses this to detect DMs.
+  });
+});
+
 // ── connection errors ──────────────────────────────────────────────────────
 
 describe("connection errors", () => {

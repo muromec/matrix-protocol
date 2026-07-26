@@ -377,6 +377,17 @@ export class MatrixClient {
     const resp = await request("GET", url, undefined, this.#accessToken, this.#requestTimeout) as { joined_rooms: string[] };
     return resp.joined_rooms;
   }
+
+  /**
+   * Get the list of members in a room.
+   *
+   * Returns a map of MXID → { display_name, avatar_url }.
+   */
+  async getJoinedMembers(roomId: string): Promise<Record<string, { display_name?: string; avatar_url?: string }>> {
+    const url = `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/joined_members`;
+    const resp = await request("GET", url, undefined, this.#accessToken, this.#requestTimeout) as { joined: Record<string, { display_name?: string; avatar_url?: string }> };
+    return resp.joined;
+  }
 }
 
 // ── HTTP helpers ───────────────────────────────────────────────────────────

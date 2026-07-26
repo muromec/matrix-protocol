@@ -150,7 +150,7 @@ export class MatrixWatcher extends EventTarget {
             // Persist the token after every successful sync.
             this.#syncToken = since;
             await saveSyncToken(this.#config.syncTokenPath, since);
-          } catch (err) {
+          } catch {
             // Classify: is this a recoverable transport error or a
             // fatal auth/server error?
             if (isRecoverable(err)) {
@@ -163,7 +163,7 @@ export class MatrixWatcher extends EventTarget {
         }
 
         break; // signal.aborted → exit cleanly
-      } catch (err) {
+      } catch {
         if (signal.aborted) break;
         this.#emit({ type: "error", error: err as Error });
       }
@@ -263,6 +263,35 @@ export class MatrixWatcher extends EventTarget {
   // ── helpers ─────────────────────────────────────────────────────────────
 
   /**
+   * Lazy DM check: if a room isn't in #directs, query joined_members.
+   * If exactly 2 members (self + one peer), mark as DM and return the
+   * peer's MXID.  Results are cached in #directs so we only query once
+   * per room per connection.
+   */
+  async #ensureRoomType(roomId: string): Promise<{ isDm: boolean; members: string[] }> {
+    if (!this.#client) return { isDm: false, members: [] };
+
+    // Already known — check the map.
+    const known = this.#directs.get(roomId);
+    if (known) return { isDm: true, members: [this.#client.userId, known] };
+
+    // Lazy: query joined_members.  Fire-and-forget-ish but waited.
+    try {
+      const joined = await this.#client.getJoinedMembers(roomId);
+      const mxids = Object.keys(joined);
+      if (mxids.length === 2) {
+        const peer = mxids.find((m) => m !== this.#client!.userId) ?? mxids[0];
+        this.#directs.set(roomId, peer);
+        return { isDm: true, members: mxids };
+      }
+    } catch {
+      // Not joined or error — not a DM we can detect.
+    }
+
+    return { isDm: false, members: [] };
+  }
+
+  /**
    * Fetch m.direct explicitly and seed the #directs map.
    * Called on connect to ensure DM detection works from the start —
    * the incremental /sync response may not include account_data.
@@ -272,15 +301,13 @@ export class MatrixWatcher extends EventTarget {
     try {
       const raw = await this.#client.getAccountData('m.direct');
       const content = raw as Record<string, string[]>;
-      console.log('[watcher] m.direct fetch result:', JSON.stringify(content));
       for (const [mxid, roomIds] of Object.entries(content)) {
         for (const roomId of roomIds) {
           this.#directs.set(roomId, mxid);
         }
       }
-    } catch (err) {
-      // m.direct may not exist (404) — fine, no DMs configured.
-      console.log('[watcher] m.direct fetch failed:', (err as Error).message);
+    } catch {
+      // m.direct may not exist (404) — fine, DMs detected lazily via joined_members.
     }
   }
 
@@ -325,6 +352,15 @@ export class MatrixWatcher extends EventTarget {
   /** Expose the roomId → mxid map for known DM rooms. */
   get directs(): ReadonlyMap<string, string> {
     return this.#directs;
+  }
+
+  /**
+   * Resolve whether a room is a DM.  Uses the cached #directs map if
+   * available, otherwise queries joined_members (single HTTP call per
+   * room, cached for the rest of the connection).
+   */
+  resolveDm(roomId: string): Promise<{ isDm: boolean; members: string[] }> {
+    return this.#ensureRoomType(roomId);
   }
 
   // ── DM room resolution ────────────────────────────────────────────────
