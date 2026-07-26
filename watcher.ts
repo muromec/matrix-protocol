@@ -73,6 +73,7 @@ export class MatrixWatcher extends EventTarget {
 
   /** Set of event IDs we've already processed (dedup).  Capped at 10k. */
   #seenEvents = new Set<string>();
+  #directs = new Map<string, string>();
   #maxSeen = 10_000;
 
   /** Current /sync `next_batch` token, persisted to `syncTokenPath`. */
@@ -222,7 +223,10 @@ export class MatrixWatcher extends EventTarget {
       }
     }
 
-    // 2. Handle joined-room timeline events.
+    // 2. Handle account_data (m.direct) updates.
+    this.#processAccountData(resp);
+
+    // 3. Handle joined-room timeline events.
     if (resp.rooms?.join) {
       for (const [roomId, roomData] of Object.entries(resp.rooms.join)) {
         const timelineEvents = roomData?.timeline?.events ?? [];
@@ -252,6 +256,25 @@ export class MatrixWatcher extends EventTarget {
 
   // ── helpers ─────────────────────────────────────────────────────────────
 
+  /**
+   * Parse account_data events for m.direct and rebuild the
+   * roomId → mxid map.  Called on every /sync response that
+   * includes account_data.
+   */
+  #processAccountData(resp: SyncResponse): void {
+    const events = resp.account_data?.events ?? [];
+    for (const evt of events) {
+      if (evt.type !== 'm.direct') continue;
+      const content = evt.content as Record<string, string[]>;
+      this.#directs.clear();
+      for (const [mxid, roomIds] of Object.entries(content)) {
+        for (const roomId of roomIds) {
+          this.#directs.set(roomId, mxid);
+        }
+      }
+    }
+  }
+
   async #joinRoom(roomId: string): Promise<void> {
     if (!this.#client) return;
     await this.#client.join(roomId);
@@ -269,6 +292,109 @@ export class MatrixWatcher extends EventTarget {
   /** Expose the client for direct API calls (e.g. typing indicators). */
   get client(): MatrixClient | null {
     return this.#client;
+  }
+
+  /** Expose the roomId → mxid map for known DM rooms. */
+  get directs(): ReadonlyMap<string, string> {
+    return this.#directs;
+  }
+
+  // ── DM room resolution ────────────────────────────────────────────────
+
+  /**
+   * Find an existing DM room for `mxid` or create one.
+   *
+   * 1. Check the in-memory `#directs` map (populated from /sync
+   *    account_data).  Cross-reference with `getJoinedRooms()` to
+   *    prune stale entries.
+   * 2. If not found, fetch `m.direct` explicitly as a fallback.
+   * 3. If still not found, create a new DM room, invite `mxid`,
+   *    update `m.direct` account data, and seed `#directs`.
+   *
+   * Returns the room ID.
+   * Throws on network/auth errors — caller should handle gracefully.
+   */
+  async findOrCreateRoom(mxid: string): Promise<string> {
+    if (!this.#client) {
+      throw new Error('MatrixWatcher: not connected — no client');
+    }
+
+    // ── 1. Check in-memory map (populated from sync) ──────────────────
+    let roomId = this.#lookupDmRoom(mxid);
+    if (roomId) return roomId;
+
+    // ── 2. Explicit fallback: fetch m.direct ──────────────────────────
+    try {
+      const directs = await this.#client.getAccountData('m.direct');
+      const dict = directs as Record<string, string[]>;
+      const roomIds = dict[mxid] ?? [];
+      if (roomIds.length > 0) {
+        // Verify we're still joined to at least one.
+        const joined = await this.#client.getJoinedRooms();
+        for (const rid of roomIds) {
+          if (joined.includes(rid)) {
+            this.#directs.set(rid, mxid);
+            return rid;
+          }
+        }
+      }
+    } catch {
+      // m.direct may not exist yet (404) — that's fine, proceed to create.
+    }
+
+    // ── 3. Create new DM room ─────────────────────────────────────────
+    roomId = await this.#client.createRoom({
+      is_direct: true,
+      invite: [mxid],
+      preset: 'trusted_private_chat',
+    });
+
+    // Update m.direct: merge with existing, persist, seed map.
+    try {
+      let existing: Record<string, string[]> = {};
+      try {
+        existing = await this.#client.getAccountData('m.direct') as Record<string, string[]>;
+      } catch {
+        // No existing m.direct — start fresh.
+      }
+
+      const updated = { ...existing };
+      updated[mxid] = [...(existing[mxid] ?? []), roomId];
+
+      await this.#client.setAccountData('m.direct', updated);
+    } catch {
+      // Room was created but m.direct update failed — still return the
+      // room ID.  The next /sync will pick it up.
+    }
+
+    this.#directs.set(roomId, mxid);
+    return roomId;
+  }
+
+  /**
+   * Look up a DM room for `mxid` from the in-memory `#directs` map,
+   * verifying the room is still joined.
+   */
+  async #lookupDmRoom(mxid: string): Promise<string | null> {
+    // Find all rooms pointing to this mxid
+    const candidates: string[] = [];
+    for (const [rid, peer] of this.#directs) {
+      if (peer === mxid) candidates.push(rid);
+    }
+    if (candidates.length === 0) return null;
+
+    // Verify at least one is still joined.
+    try {
+      const joined = await this.#client!.getJoinedRooms();
+      for (const rid of candidates) {
+        if (joined.includes(rid)) return rid;
+      }
+    } catch {
+      // Can't verify — trust the map for now.
+      return candidates[0];
+    }
+
+    return null; // all candidates are stale
   }
 
   #sleep(ms: number, signal: AbortSignal): Promise<void> {

@@ -70,6 +70,9 @@ export interface SyncResponse {
     invite?: Record<string, { invite_state?: { events: MatrixEvent[] } }>;
     leave?: Record<string, unknown>;
   };
+  account_data?: {
+    events?: Array<{ type: string; content: Record<string, unknown> }>;
+  };
 }
 
 /** POST /login response. */
@@ -83,6 +86,14 @@ export interface LoginResponse {
 /** Response from PUT /send. */
 export interface SendResponse {
   event_id: string;
+}
+
+/** Request body for POST /createRoom. */
+export interface CreateRoomRequest {
+  is_direct?: boolean;
+  invite?: string[];
+  preset?: string;
+  name?: string;
 }
 
 // ── error ──────────────────────────────────────────────────────────────────
@@ -178,7 +189,7 @@ export class MatrixClient {
     // about room events.
     params.set("filter", JSON.stringify({
       presence: { types: [] },
-      account_data: { types: [] },
+      account_data: { types: ["m.direct"] },
       room: { timeline: { types: ["m.room.message", "m.room.member"] } },
     }));
 
@@ -313,6 +324,58 @@ export class MatrixClient {
     const url =
       `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/leave`;
     await request("POST", url, {}, this.#accessToken, this.#requestTimeout);
+  }
+
+  // ── account data ───────────────────────────────────────────────────────
+
+  /**
+   * Get account data for the logged-in user.
+   *
+   * `type` is the event type, e.g. `"m.direct"`.
+   * Returns the parsed content object, or throws MatrixError on failure.
+   */
+  async getAccountData(type: string): Promise<Record<string, unknown>> {
+    const url =
+      `${this.#baseUrl}/_matrix/client/v3/user/${encodeURIComponent(this.#userId)}/account_data/${encodeURIComponent(type)}`;
+    return await request("GET", url, undefined, this.#accessToken, this.#requestTimeout) as Record<string, unknown>;
+  }
+
+  /**
+   * Set account data for the logged-in user.
+   *
+   * `type` is the event type, `content` is the content dict.
+   */
+  async setAccountData(type: string, content: Record<string, unknown>): Promise<void> {
+    const url =
+      `${this.#baseUrl}/_matrix/client/v3/user/${encodeURIComponent(this.#userId)}/account_data/${encodeURIComponent(type)}`;
+    await request("PUT", url, content, this.#accessToken, this.#requestTimeout);
+  }
+
+  // ── room management ────────────────────────────────────────────────────
+
+  /**
+   * Create a new room.
+   *
+   * `opts` may include `is_direct`, `invite` (list of MXIDs),
+   * `preset` (e.g. `"trusted_private_chat"`), and `name`.
+   *
+   * Returns the new room ID.
+   */
+  async createRoom(opts: CreateRoomRequest): Promise<string> {
+    const url = `${this.#baseUrl}/_matrix/client/v3/createRoom`;
+    const resp = await request("POST", url, opts, this.#accessToken, this.#requestTimeout) as { room_id: string };
+    return resp.room_id;
+  }
+
+  /**
+   * Get the list of rooms the user is currently joined to.
+   *
+   * Returns an array of room IDs.
+   */
+  async getJoinedRooms(): Promise<string[]> {
+    const url = `${this.#baseUrl}/_matrix/client/v3/joined_rooms`;
+    const resp = await request("GET", url, undefined, this.#accessToken, this.#requestTimeout) as { joined_rooms: string[] };
+    return resp.joined_rooms;
   }
 }
 

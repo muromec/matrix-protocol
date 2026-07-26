@@ -401,6 +401,125 @@ describe("getDisplayName", () => {
   });
 });
 
+// ── account data ───────────────────────────────────────────────────────────
+
+describe("getAccountData", () => {
+  it("fetches m.direct account data", async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, {
+      "@alice:matrix.org": ["!dm1:matrix.org"],
+      "@bob:matrix.org": ["!dm2:matrix.org"],
+    });
+
+    const data = await client.getAccountData("m.direct");
+    expect(data).toEqual({
+      "@alice:matrix.org": ["!dm1:matrix.org"],
+      "@bob:matrix.org": ["!dm2:matrix.org"],
+    });
+
+    const req = srv.lastRequest;
+    expect(req?.method).toBe("GET");
+    expect(req?.path).toContain("/user/%40bot%3Amatrix.org/account_data/m.direct");
+  });
+
+  it("returns empty object for missing account data (404)", async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(404, { errcode: "M_NOT_FOUND", error: "Not found" });
+
+    await expect(client.getAccountData("m.direct")).rejects.toThrow(MatrixError);
+  });
+});
+
+describe("setAccountData", () => {
+  it("sets m.direct account data", async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, {});
+
+    await client.setAccountData("m.direct", {
+      "@alice:matrix.org": ["!dm1:matrix.org"],
+    });
+
+    const req = srv.lastRequest;
+    expect(req?.method).toBe("PUT");
+    expect(req?.path).toContain("/user/%40bot%3Amatrix.org/account_data/m.direct");
+    const body = JSON.parse(req?.body ?? "{}");
+    expect(body["@alice:matrix.org"]).toEqual(["!dm1:matrix.org"]);
+  });
+});
+
+// ── room management ───────────────────────────────────────────────────────
+
+describe("createRoom", () => {
+  it("creates a DM room with invite", async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, { room_id: "!newdm:matrix.org" });
+
+    const roomId = await client.createRoom({
+      is_direct: true,
+      invite: ["@alice:matrix.org"],
+      preset: "trusted_private_chat",
+    });
+
+    expect(roomId).toBe("!newdm:matrix.org");
+
+    const req = srv.lastRequest;
+    expect(req?.method).toBe("POST");
+    expect(req?.path).toBe("/_matrix/client/v3/createRoom");
+    const body = JSON.parse(req?.body ?? "{}");
+    expect(body.is_direct).toBe(true);
+    expect(body.invite).toEqual(["@alice:matrix.org"]);
+    expect(body.preset).toBe("trusted_private_chat");
+  });
+
+  it("creates a named room", async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, { room_id: "!named:matrix.org" });
+
+    const roomId = await client.createRoom({ name: "Test Room" });
+    expect(roomId).toBe("!named:matrix.org");
+
+    const body = JSON.parse(srv.lastRequest?.body ?? "{}");
+    expect(body.name).toBe("Test Room");
+  });
+
+  it("throws MatrixError on failure", async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(403, { errcode: "M_FORBIDDEN", error: "Not allowed" });
+
+    await expect(client.createRoom({})).rejects.toThrow(MatrixError);
+  });
+});
+
+describe("getJoinedRooms", () => {
+  it("returns list of joined room IDs", async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, { joined_rooms: ["!room1:matrix.org", "!room2:matrix.org"] });
+
+    const rooms = await client.getJoinedRooms();
+    expect(rooms).toEqual(["!room1:matrix.org", "!room2:matrix.org"]);
+
+    const req = srv.lastRequest;
+    expect(req?.method).toBe("GET");
+    expect(req?.path).toBe("/_matrix/client/v3/joined_rooms");
+  });
+
+  it("returns empty array when no rooms joined", async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, { joined_rooms: [] });
+
+    const rooms = await client.getJoinedRooms();
+    expect(rooms).toEqual([]);
+  });
+});
+
 // ── connection errors ──────────────────────────────────────────────────────
 
 describe("connection errors", () => {
