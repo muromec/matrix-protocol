@@ -311,6 +311,21 @@ export class MatrixClient {
    * `timeoutMs` — how long before the server considers the typing
    *               stopped if no further notification arrives (default 15_000).
    */
+
+  /**
+   * Send a read marker (both fully-read and read receipt) for an event.
+   *
+   * https://spec.matrix.org/v1.13/client-server-api/#receiving-notifications
+   */
+  async sendReadMarker(roomId: string, eventId: string): Promise<void> {
+    const url =
+      `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/read_markers`;
+    await request("POST", url, {
+      "m.fully_read": eventId,
+      "m.read": eventId,
+    }, this.#accessToken, this.#requestTimeout);
+  }
+
   async sendTyping(roomId: string, typing: boolean, timeoutMs = 15_000): Promise<void> {
     const url =
       `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/typing/${encodeURIComponent(this.#userId)}`;
