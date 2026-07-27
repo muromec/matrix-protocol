@@ -150,7 +150,7 @@ export class MatrixWatcher extends EventTarget {
             // Persist the token after every successful sync.
             this.#syncToken = since;
             await saveSyncToken(this.#config.syncTokenPath, since);
-          } catch {
+          } catch (err) {
             // Classify: is this a recoverable transport error or a
             // fatal auth/server error?
             if (isRecoverable(err)) {
@@ -384,7 +384,7 @@ export class MatrixWatcher extends EventTarget {
     }
 
     // ── 1. Check in-memory map (populated from sync) ──────────────────
-    let roomId = this.#lookupDmRoom(mxid);
+    let roomId = await this.#lookupDmRoom(mxid);
     if (roomId) return roomId;
 
     // ── 2. Explicit fallback: fetch m.direct ──────────────────────────
