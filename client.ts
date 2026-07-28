@@ -10,7 +10,7 @@
 //   POST /join/{roomIdOrAlias}     — join a room (accept invite)
 //
 // Design notes:
-//   - Keeps no in-memory state except the access_token and homeserver URL.
+//   - Keeps access_token, homeserver URL, and current presence state.
 //   - The `sync` method is a long-poll (30s default timeout).  The caller
 //     is expected to loop, passing the `next_batch` token from each
 //     response.
@@ -120,6 +120,7 @@ export class MatrixClient {
   #requestTimeout: number;
   #txnCounter: number;
   #userId: string;
+  #currentPresence: string;
 
   private constructor(
     baseUrl: string,
@@ -132,6 +133,7 @@ export class MatrixClient {
     this.#userId = userId;
     this.#requestTimeout = requestTimeout;
     this.#txnCounter = 0;
+    this.#currentPresence = "online";
   }
 
   // ── static factory: login ──────────────────────────────────────────────
@@ -192,6 +194,10 @@ export class MatrixClient {
       account_data: { types: ["m.direct"] },
       room: { timeline: { types: ["m.room.message", "m.room.member"] } },
     }));
+    // Carry our current presence on every sync so the server doesn't
+    // silently bump us back to "online" (the Matrix spec default when
+    // set_presence is omitted — see CS API /sync docs).
+    params.set("set_presence", this.#currentPresence);
 
     const url = `${this.#baseUrl}/_matrix/client/v3/sync?${params.toString()}`;
     const resp = await request("GET", url, undefined, this.#accessToken, this.#requestTimeout) as SyncResponse;
@@ -299,6 +305,7 @@ export class MatrixClient {
    * `presence` is one of: "online", "offline", "unavailable".
    */
   async setPresence(presence: string): Promise<void> {
+    this.#currentPresence = presence;
     const url =
       `${this.#baseUrl}/_matrix/client/v3/presence/${encodeURIComponent(this.#userId)}/status`;
     await request("PUT", url, { presence }, this.#accessToken, this.#requestTimeout);
