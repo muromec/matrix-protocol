@@ -311,6 +311,13 @@ export class MatrixClient {
     await request("PUT", url, { presence }, this.#accessToken, this.#requestTimeout);
   }
 
+  /** Set the user-visible display name for this account. */
+  async setDisplayName(displayname: string): Promise<void> {
+    const url =
+      `${this.#baseUrl}/_matrix/client/v3/profile/${encodeURIComponent(this.#userId)}/displayname`;
+    await request("PUT", url, { displayname }, this.#accessToken, this.#requestTimeout);
+  }
+
   /**
    * Send a typing notification to a room.
    *

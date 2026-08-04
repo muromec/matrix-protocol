@@ -113,6 +113,11 @@ export class MatrixWatcher extends EventTarget {
 
         // Announce ourselves as online so clients see a green indicator.
         this.#client.setPresence("online").catch(() => {});
+        
+        // Set the user-visible display name from identity config.
+        if (this.#config.initialDeviceDisplayName && this.#client) {
+          this.#client.setDisplayName(this.#config.initialDeviceDisplayName).catch(() => {});
+        }
 
         // Fetch m.direct before processing any messages — the
         // incremental /sync (with saved since token) won't include
