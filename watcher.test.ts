@@ -256,4 +256,35 @@ describe('findOrCreateRoom', () => {
     const roomId = await watcher.findOrCreateRoom('@bob:ex.com');
     expect(roomId).toBe('!new-dm:ex.com');
   });
+
+  it('falls back to m.direct when cached room is stale (left room)', async () => {
+    const { watcher, client } = await boot();
+    seedDm(watcher, '!stale-cached:ex.com', '@alice:ex.com');
+    // First getJoinedRooms call (cached path): not joined.
+    // Second call (m.direct path): joined to the real room.
+    client.getJoinedRooms
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(['!dm-real:ex.com']);
+    client.getAccountData.mockResolvedValue({
+      '@alice:ex.com': ['!dm-real:ex.com'],
+    });
+
+    const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
+    expect(roomId).toBe('!dm-real:ex.com');
+    expect(client.createRoom).not.toHaveBeenCalled();
+  });
+
+  it('creates room when both cached and m.direct rooms are stale', async () => {
+    const { watcher, client } = await boot();
+    seedDm(watcher, '!stale:ex.com', '@bob:ex.com');
+    client.getJoinedRooms.mockResolvedValue([]);
+    client.getAccountData.mockResolvedValue({
+      '@bob:ex.com': ['!also-stale:ex.com'],
+    });
+    client.createRoom.mockResolvedValue('!new-dm:ex.com');
+
+    const roomId = await watcher.findOrCreateRoom('@bob:ex.com');
+    expect(roomId).toBe('!new-dm:ex.com');
+    expect(client.createRoom).toHaveBeenCalled();
+  });
 });
