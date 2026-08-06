@@ -33,6 +33,8 @@ vi.mock('./client.ts', () => ({
 
 const { MatrixWatcher } = await import('./watcher.ts');
 import type { WatcherConfig } from './watcher.ts';
+import { BiDiMemorySource } from '../../src/data-sources/bi-di-memory.ts';
+import type { DmKey } from '../../src/data-sources/bi-di-memory.ts';
 
 interface MockClient {
   userId: string;
@@ -78,10 +80,11 @@ function makeConfig(overrides: Partial<WatcherConfig> = {}): WatcherConfig {
   };
 }
 
-/** Seed a DM room entry.  directs is a ReadonlyMap getter, but the map
- *  itself is mutable. */
-function seedDm(watcher: MatrixWatcher, roomId: string, mxid: string): void {
-  (watcher.directs as Map<string, string>).set(roomId, mxid);
+/** Seed a DM room into the watcher's memory cache layer. */
+async function seedDm(watcher: MatrixWatcher, roomId: string, mxid: string): Promise<void> {
+  const mem = watcher.dmMemory;
+  if (!mem) throw new Error('dmMemory not initialised — did boot complete?');
+  await mem.set({ tag: 'roomid', value: roomId }, mxid);
 }
 
 async function boot(): Promise<{
@@ -103,6 +106,15 @@ async function boot(): Promise<{
   w.stop();
   await startPromise;
 
+  // Reset mock call history — boot calls fetchDirects + warmup which
+  // touch getAccountData, getJoinedRooms, getJoinedMembers.
+  // Tests should start with a clean slate.
+  mockClient.getAccountData.mockClear();
+  mockClient.setAccountData.mockClear();
+  mockClient.createRoom.mockClear();
+  mockClient.getJoinedRooms.mockClear();
+  mockClient.getJoinedMembers.mockClear();
+
   return { watcher: w, client: mockClient };
 }
 
@@ -116,9 +128,9 @@ describe('resolveDm', () => {
     expect(result.members).toEqual([]);
   });
 
-  it('returns isDm=true from cached #directs map', async () => {
+  it('returns isDm=true from cached memory layer', async () => {
     const { watcher } = await boot();
-    seedDm(watcher, '!dm:ex.com', '@alice:ex.com');
+    await seedDm(watcher, '!dm:ex.com', '@alice:ex.com');
 
     const result = await watcher.resolveDm('!dm:ex.com');
     expect(result.isDm).toBe(true);
@@ -177,31 +189,35 @@ describe('findOrCreateRoom', () => {
     );
   });
 
-  it('returns cached DM room from #directs (verified joined)', async () => {
+  it('returns cached DM room from memory layer (chain hit)', async () => {
     const { watcher, client } = await boot();
-    seedDm(watcher, '!dm:ex.com', '@alice:ex.com');
-    client.getJoinedRooms.mockResolvedValue(['!dm:ex.com']);
+    await seedDm(watcher, '!dm:ex.com', '@alice:ex.com');
 
     const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
     expect(roomId).toBe('!dm:ex.com');
     expect(client.createRoom).not.toHaveBeenCalled();
+    // Chain hit at memory layer — no API calls needed.
+    expect(client.getAccountData).not.toHaveBeenCalled();
+    expect(client.getJoinedRooms).not.toHaveBeenCalled();
   });
 
-  it('returns cached room when getJoinedRooms fails (trusts map)', async () => {
+  it('returns cached room without any API verification (trusts warmup)', async () => {
     const { watcher, client } = await boot();
-    seedDm(watcher, '!dm:ex.com', '@alice:ex.com');
+    await seedDm(watcher, '!dm:ex.com', '@alice:ex.com');
+    // Network is broken but we trust the cache.
+    client.getAccountData.mockRejectedValue(new Error('network error'));
     client.getJoinedRooms.mockRejectedValue(new Error('network error'));
 
     const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
     expect(roomId).toBe('!dm:ex.com');
   });
 
-  it('falls back to m.direct fetch when not in cache', async () => {
+  it('falls back to m.direct when not in memory', async () => {
     const { watcher, client } = await boot();
+    // Memory is empty — chain proceeds to MDirectSource.
     client.getAccountData.mockResolvedValue({
       '@alice:ex.com': ['!dm-found:ex.com'],
     });
-    client.getJoinedRooms.mockResolvedValue(['!dm-found:ex.com']);
 
     const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
     expect(roomId).toBe('!dm-found:ex.com');
@@ -223,32 +239,33 @@ describe('findOrCreateRoom', () => {
     });
   });
 
-  it('returns room even when m.direct update after create fails', async () => {
+  it('returns room even when chain.set fails for some layers', async () => {
     const { watcher, client } = await boot();
-    client.getAccountData
-      .mockRejectedValueOnce(new Error('404'))
-      .mockResolvedValueOnce({ '@other:ex.com': ['!x:ex'] });
+    client.getAccountData.mockRejectedValue(new Error('404'));
     client.createRoom.mockResolvedValue('!new-dm:ex.com');
+    // setAccountData will fail — but the room was created.
     client.setAccountData.mockRejectedValue(new Error('setAccountData failed'));
 
     const roomId = await watcher.findOrCreateRoom('@bob:ex.com');
     expect(roomId).toBe('!new-dm:ex.com');
   });
 
-  it('creates room when m.direct has entry but not joined anymore', async () => {
+  it('returns m.direct entry even if stale (trusting warmup)', async () => {
     const { watcher, client } = await boot();
+    // m.direct has an entry, but warmup would have cleaned it if stale.
+    // During runtime we trust it — no per-lookup membership verification.
     client.getAccountData.mockResolvedValue({
-      '@alice:ex.com': ['!stale:ex.com'],
+      '@alice:ex.com': ['!may-be-stale:ex.com'],
     });
-    client.getJoinedRooms.mockResolvedValue([]);
-    client.createRoom.mockResolvedValue('!new-dm:ex.com');
 
     const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
-    expect(roomId).toBe('!new-dm:ex.com');
-    expect(client.createRoom).toHaveBeenCalled();
+    expect(roomId).toBe('!may-be-stale:ex.com');
+    expect(client.createRoom).not.toHaveBeenCalled();
+    // No membership check — we trust the chain.
+    expect(client.getJoinedRooms).not.toHaveBeenCalled();
   });
 
-  it('handles inner getAccountData error during create path', async () => {
+  it('handles getAccountData error during chain.set after create', async () => {
     const { watcher, client } = await boot();
     client.getAccountData
       .mockRejectedValueOnce(new Error('404'))
@@ -259,78 +276,18 @@ describe('findOrCreateRoom', () => {
     expect(roomId).toBe('!new-dm:ex.com');
   });
 
-  it('falls back to m.direct when cached room is stale (left room)', async () => {
-    const { watcher, client } = await boot();
-    seedDm(watcher, '!stale-cached:ex.com', '@alice:ex.com');
-    // First getJoinedRooms call (cached path): not joined.
-    // Second call (m.direct path): joined to the real room.
-    client.getJoinedRooms
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce(['!dm-real:ex.com']);
-    client.getAccountData.mockResolvedValue({
-      '@alice:ex.com': ['!dm-real:ex.com'],
-    });
-
-    const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
-    expect(roomId).toBe('!dm-real:ex.com');
-    expect(client.createRoom).not.toHaveBeenCalled();
-  });
-
-  it('creates room when both cached and m.direct rooms are stale', async () => {
-    const { watcher, client } = await boot();
-    seedDm(watcher, '!stale:ex.com', '@bob:ex.com');
-    client.getJoinedRooms.mockResolvedValue([]);
-    client.getAccountData.mockResolvedValue({
-      '@bob:ex.com': ['!also-stale:ex.com'],
-    });
-    client.createRoom.mockResolvedValue('!new-dm:ex.com');
-
-    const roomId = await watcher.findOrCreateRoom('@bob:ex.com');
-    expect(roomId).toBe('!new-dm:ex.com');
-    expect(client.createRoom).toHaveBeenCalled();
-  });
-
-  it('picks room where target is a member when multiple candidates exist', async () => {
+  it('returns first m.direct room when multiple exist (no membership check)', async () => {
     const { watcher, client } = await boot();
     client.getAccountData.mockResolvedValue({
       '@alice:ex.com': ['!dm-old:ex.com', '!dm-current:ex.com'],
     });
-    client.getJoinedRooms.mockResolvedValue(['!dm-old:ex.com', '!dm-current:ex.com']);
-    client.getJoinedMembers
-      .mockResolvedValueOnce({ '@butler:ex.com': {} })
-      .mockResolvedValueOnce({ '@butler:ex.com': {}, '@alice:ex.com': {} });
 
     const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
-    expect(roomId).toBe('!dm-current:ex.com');
+    // MDirectSource returns the first room from the array.
+    expect(roomId).toBe('!dm-old:ex.com');
     expect(client.createRoom).not.toHaveBeenCalled();
-  });
-
-  it('falls back to first joined room when membership check fails', async () => {
-    const { watcher, client } = await boot();
-    client.getAccountData.mockResolvedValue({
-      '@alice:ex.com': ['!dm-a:ex.com', '!dm-b:ex.com'],
-    });
-    client.getJoinedRooms.mockResolvedValue(['!dm-a:ex.com', '!dm-b:ex.com']);
-    client.getJoinedMembers.mockRejectedValue(new Error('network error'));
-
-    const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
-    expect(roomId).toBe('!dm-a:ex.com');
-    expect(client.createRoom).not.toHaveBeenCalled();
-  });
-
-  it('picks correct room from #directs when multiple cached rooms exist', async () => {
-    const { watcher, client } = await boot();
-    seedDm(watcher, '!dm-stale:ex.com', '@alice:ex.com');
-    seedDm(watcher, '!dm-real:ex.com', '@alice:ex.com');
-    client.getJoinedRooms.mockResolvedValue(['!dm-stale:ex.com', '!dm-real:ex.com']);
-    client.getJoinedMembers
-      .mockResolvedValueOnce({ '@butler:ex.com': {} })
-      .mockResolvedValueOnce({ '@butler:ex.com': {}, '@alice:ex.com': {} });
-
-    const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
-    expect(roomId).toBe('!dm-real:ex.com');
-    expect(client.createRoom).not.toHaveBeenCalled();
-    // getAccountData may be called if lookupDmRoom falls through
+    // No membership verification per-lookup — warmup handles staleness.
+    expect(client.getJoinedMembers).not.toHaveBeenCalled();
   });
 
   it('finds room via joined-room scan when cache and m.direct miss', async () => {
@@ -344,7 +301,6 @@ describe('findOrCreateRoom', () => {
     const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
     expect(roomId).toBe('!real-dm:ex.com');
     expect(client.createRoom).not.toHaveBeenCalled();
-    expect(client.setAccountData).toHaveBeenCalled();
   });
 
   it('creates room when scan also finds nothing', async () => {
@@ -357,5 +313,24 @@ describe('findOrCreateRoom', () => {
     const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
     expect(roomId).toBe('!new-dm:ex.com');
     expect(client.createRoom).toHaveBeenCalled();
+  });
+
+  it('writes created room back through the chain (memory + m.direct)', async () => {
+    const { watcher, client } = await boot();
+    client.getAccountData.mockResolvedValue({});
+    client.createRoom.mockResolvedValue('!new-dm:ex.com');
+
+    await watcher.findOrCreateRoom('@alice:ex.com');
+
+    // Chain.set writes to all layers, including m.direct.
+    expect(client.setAccountData).toHaveBeenCalled();
+    // Second lookup hits memory cache.
+    client.getAccountData.mockClear();
+    client.createRoom.mockClear();
+    const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
+    expect(roomId).toBe('!new-dm:ex.com');
+    expect(client.createRoom).not.toHaveBeenCalled();
+    // No API call needed — memory layer hit.
+    expect(client.getAccountData).not.toHaveBeenCalled();
   });
 });
