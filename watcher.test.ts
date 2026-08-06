@@ -42,6 +42,7 @@ interface MockClient {
   getJoinedRooms: ReturnType<typeof vi.fn>;
   getJoinedMembers: ReturnType<typeof vi.fn>;
   join: ReturnType<typeof vi.fn>;
+  leave: ReturnType<typeof vi.fn>;
   setPresence: ReturnType<typeof vi.fn>;
   sync: ReturnType<typeof vi.fn>;
 }
@@ -59,6 +60,7 @@ function freshMockClient(overrides: Partial<MockClient> = {}): MockClient {
     getJoinedRooms: vi.fn().mockResolvedValue([]),
     getJoinedMembers: vi.fn().mockRejectedValue(new Error('getJoinedMembers not stubbed')),
     join: vi.fn().mockResolvedValue(undefined),
+    leave: vi.fn().mockResolvedValue(undefined),
     setPresence: vi.fn().mockResolvedValue(undefined),
     sync: vi.fn().mockImplementation(() => tick({ next_batch: 's1', rooms: {} })),
     ...overrides,
@@ -286,5 +288,48 @@ describe('findOrCreateRoom', () => {
     const roomId = await watcher.findOrCreateRoom('@bob:ex.com');
     expect(roomId).toBe('!new-dm:ex.com');
     expect(client.createRoom).toHaveBeenCalled();
+  });
+
+  it('picks room where target is a member when multiple candidates exist', async () => {
+    const { watcher, client } = await boot();
+    client.getAccountData.mockResolvedValue({
+      '@alice:ex.com': ['!dm-old:ex.com', '!dm-current:ex.com'],
+    });
+    client.getJoinedRooms.mockResolvedValue(['!dm-old:ex.com', '!dm-current:ex.com']);
+    client.getJoinedMembers
+      .mockResolvedValueOnce({ '@butler:ex.com': {} })
+      .mockResolvedValueOnce({ '@butler:ex.com': {}, '@alice:ex.com': {} });
+
+    const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
+    expect(roomId).toBe('!dm-current:ex.com');
+    expect(client.createRoom).not.toHaveBeenCalled();
+  });
+
+  it('falls back to first joined room when membership check fails', async () => {
+    const { watcher, client } = await boot();
+    client.getAccountData.mockResolvedValue({
+      '@alice:ex.com': ['!dm-a:ex.com', '!dm-b:ex.com'],
+    });
+    client.getJoinedRooms.mockResolvedValue(['!dm-a:ex.com', '!dm-b:ex.com']);
+    client.getJoinedMembers.mockRejectedValue(new Error('network error'));
+
+    const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
+    expect(roomId).toBe('!dm-a:ex.com');
+    expect(client.createRoom).not.toHaveBeenCalled();
+  });
+
+  it('picks correct room from #directs when multiple cached rooms exist', async () => {
+    const { watcher, client } = await boot();
+    seedDm(watcher, '!dm-stale:ex.com', '@alice:ex.com');
+    seedDm(watcher, '!dm-real:ex.com', '@alice:ex.com');
+    client.getJoinedRooms.mockResolvedValue(['!dm-stale:ex.com', '!dm-real:ex.com']);
+    client.getJoinedMembers
+      .mockResolvedValueOnce({ '@butler:ex.com': {} })
+      .mockResolvedValueOnce({ '@butler:ex.com': {}, '@alice:ex.com': {} });
+
+    const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
+    expect(roomId).toBe('!dm-real:ex.com');
+    expect(client.createRoom).not.toHaveBeenCalled();
+    // getAccountData may be called if lookupDmRoom falls through
   });
 });

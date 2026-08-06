@@ -75,6 +75,8 @@ export class MatrixWatcher extends EventTarget {
   #seenEvents = new Set<string>();
   #directs = new Map<string, string>();
   #maxSeen = 10_000;
+  #readyPromise: Promise<void>;
+  #readyResolve!: () => void;
 
   /** Current /sync `next_batch` token, persisted to `syncTokenPath`. */
   #syncToken: string | undefined;
@@ -82,9 +84,14 @@ export class MatrixWatcher extends EventTarget {
   constructor(config: WatcherConfig) {
     super();
     this.#config = config;
+    this.#readyPromise = new Promise((resolve) => { this.#readyResolve = resolve; });
   }
 
   // ── public API ──────────────────────────────────────────────────────────
+
+  /** Promise that resolves once #fetchDirects() completes and the cache
+   *  is populated.  Resets on reconnect. */
+  get ready(): Promise<void> { return this.#readyPromise; }
 
   /** Start watching.  Resolves when the first connection succeeds.
    *  Runs until `stop()` is called. */
@@ -109,6 +116,7 @@ export class MatrixWatcher extends EventTarget {
           initialDeviceDisplayName: this.#config.initialDeviceDisplayName,
         });
 
+        this.#readyPromise = new Promise((resolve) => { this.#readyResolve = resolve; });
         this.#emit({ type: "connected" });
 
         // Announce ourselves as online so clients see a green indicator.
@@ -124,6 +132,8 @@ export class MatrixWatcher extends EventTarget {
         // account_data unless it changed.  Without this, the first
         // messages after reconnection won't detect DMs.
         await this.#fetchDirects();
+        this.#cleanupSelfRooms().catch(() => {}); // fire-and-forget, best-effort
+        this.#readyResolve();
 
         // Restore the saved sync token if available (survives restarts).
         if (this.#syncToken === undefined) {
@@ -301,6 +311,29 @@ export class MatrixWatcher extends EventTarget {
    * Called on connect to ensure DM detection works from the start —
    * the incremental /sync response may not include account_data.
    */
+  /** Leave rooms where the only member is self.  Best-effort cleanup
+   *  for rooms created by buggy `findOrCreateRoom` calls. */
+  async #cleanupSelfRooms(): Promise<void> {
+    if (!this.#client) return;
+    try {
+      const joined = await this.#client.getJoinedRooms();
+      const userId = this.#config.userId;
+      for (const roomId of joined) {
+        try {
+          const members = await this.#client.getJoinedMembers(roomId);
+          const memberIds = Object.keys(members);
+          if (memberIds.length === 1 && memberIds[0] === userId) {
+            await this.#client.leave(roomId);
+          }
+        } catch {
+          // Can't check this room — skip it.
+        }
+      }
+    } catch {
+      // Can't list joined rooms — skip cleanup.
+    }
+  }
+
   async #fetchDirects(): Promise<void> {
     if (!this.#client) return;
     try {
@@ -400,11 +433,27 @@ export class MatrixWatcher extends EventTarget {
       if (roomIds.length > 0) {
         // Verify we're still joined to at least one.
         const joined = await this.#client.getJoinedRooms();
-        for (const rid of roomIds) {
-          if (joined.includes(rid)) {
-            this.#directs.set(rid, mxid);
-            return rid;
+        const valid = roomIds.filter((rid) => joined.includes(rid));
+        if (valid.length === 1) {
+          this.#directs.set(valid[0], mxid);
+          return valid[0];
+        }
+        if (valid.length > 1) {
+          // Multiple rooms — pick the one where the target is a member.
+          for (const rid of valid) {
+            try {
+              const members = await this.#client.getJoinedMembers(rid);
+              if (Object.keys(members).includes(mxid)) {
+                this.#directs.set(rid, mxid);
+                return rid;
+              }
+            } catch {
+              // Can't check this room — skip it.
+            }
           }
+          // None verified — return the first joined room.
+          this.#directs.set(valid[0], mxid);
+          return valid[0];
         }
       }
     } catch {
@@ -452,18 +501,27 @@ export class MatrixWatcher extends EventTarget {
     }
     if (candidates.length === 0) return null;
 
-    // Verify at least one is still joined.
+    // Verify at least one is still joined and has the target as a member.
     try {
       const joined = await this.#client!.getJoinedRooms();
-      for (const rid of candidates) {
-        if (joined.includes(rid)) return rid;
+      const valid = candidates.filter((rid) => joined.includes(rid));
+      if (valid.length === 0) return null;
+      if (valid.length === 1) return valid[0];
+      // Multiple candidates — pick the one where the target is a member.
+      for (const rid of valid) {
+        try {
+          const members = await this.#client!.getJoinedMembers(rid);
+          if (Object.keys(members).includes(mxid)) return rid;
+        } catch {
+          // Can't check this room — skip it.
+        }
       }
+      // None verified — return the first joined room anyway.
+      return valid[0];
     } catch {
       // Can't verify — trust the map for now.
       return candidates[0];
     }
-
-    return null; // all candidates are stale
   }
 
   #sleep(ms: number, signal: AbortSignal): Promise<void> {
