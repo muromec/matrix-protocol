@@ -350,7 +350,8 @@ export class MatrixWatcher extends EventTarget {
           count++;
         }
       }
-      console.log(`[watcher:fetchDirects] (${this.#config.userId}) seeded ${count} entries from m.direct`);
+      console.log(`[watcher:fetchDirects] (${this.#config.userId}) seeded ${count} entries:`,
+        [...this.#directs.entries()].map(([rid, mxid]) => `${mxid}→${rid}`));
     } catch {
       console.log(`[watcher:fetchDirects] (${this.#config.userId}) m.direct fetch failed (may not exist yet)`);
     }
