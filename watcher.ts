@@ -338,6 +338,21 @@ export class MatrixWatcher extends EventTarget {
     }
   }
 
+  /** Update m.direct to include a room for mxid.  Fire-and-forget. */
+  async #repairDirects(mxid: string, roomId: string): Promise<void> {
+    if (!this.#client) return;
+    try {
+      let existing: Record<string, string[]> = {};
+      try { existing = await this.#client.getAccountData('m.direct') as Record<string, string[]>; } catch { /* start fresh */ }
+      const updated = { ...existing };
+      updated[mxid] = [...new Set([...(existing[mxid] ?? []), roomId])];
+      await this.#client.setAccountData('m.direct', updated);
+      console.log(`[watcher:repairDirects] (${this.#config.userId}) added ${mxid}→${roomId} to m.direct`);
+    } catch {
+      console.log(`[watcher:repairDirects] (${this.#config.userId}) failed to update m.direct`);
+    }
+  }
+
   async #fetchDirects(): Promise<void> {
     if (!this.#client) return;
     try {
@@ -475,8 +490,35 @@ export class MatrixWatcher extends EventTarget {
         }
       }
     } catch {
-      // m.direct may not exist yet (404) — that's fine, proceed to create.
+      // m.direct may not exist yet (404) — that's fine, proceed to scan.
     }
+
+    // ── 2.5. Scan joined rooms for the target MXID ────────────────────
+    // Both L1 (#directs) and L2 (m.direct) missed.  Walk every joined
+    // room and check membership for the target.  This is the same lazy
+    // DM detection resolveDm uses, just inverted: MXID → room instead
+    // of room → MXID.
+    console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) scanning joined rooms for ${mxid}`);
+    try {
+      const joined = await this.#client.getJoinedRooms();
+      for (const rid of joined) {
+        try {
+          const members = await this.#client.getJoinedMembers(rid);
+          if (Object.keys(members).includes(mxid)) {
+            console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) found via scan → ${rid}`);
+            this.#directs.set(rid, mxid);
+            // Repair L2 (m.direct) so future lookups hit the cache.
+            this.#repairDirects(mxid, rid).catch(() => {});
+            return rid;
+          }
+        } catch {
+          // Can't check this room — skip it.
+        }
+      }
+    } catch {
+      // Can't list rooms — fall through to create.
+    }
+    console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) scan found nothing, creating`);
 
     // ── 3. Create new DM room ─────────────────────────────────────────
     console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) creating new DM for ${mxid}`);

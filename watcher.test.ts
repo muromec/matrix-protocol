@@ -332,4 +332,30 @@ describe('findOrCreateRoom', () => {
     expect(client.createRoom).not.toHaveBeenCalled();
     // getAccountData may be called if lookupDmRoom falls through
   });
+
+  it('finds room via joined-room scan when cache and m.direct miss', async () => {
+    const { watcher, client } = await boot();
+    client.getAccountData.mockResolvedValue({});
+    client.getJoinedRooms.mockResolvedValue(['!other:ex.com', '!real-dm:ex.com']);
+    client.getJoinedMembers
+      .mockResolvedValueOnce({ '@other:ex.com': {} })
+      .mockResolvedValueOnce({ '@butler:ex.com': {}, '@alice:ex.com': {} });
+
+    const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
+    expect(roomId).toBe('!real-dm:ex.com');
+    expect(client.createRoom).not.toHaveBeenCalled();
+    expect(client.setAccountData).toHaveBeenCalled();
+  });
+
+  it('creates room when scan also finds nothing', async () => {
+    const { watcher, client } = await boot();
+    client.getAccountData.mockResolvedValue({});
+    client.getJoinedRooms.mockResolvedValue(['!other:ex.com']);
+    client.getJoinedMembers.mockResolvedValue({ '@other:ex.com': {} });
+    client.createRoom.mockResolvedValue('!new-dm:ex.com');
+
+    const roomId = await watcher.findOrCreateRoom('@alice:ex.com');
+    expect(roomId).toBe('!new-dm:ex.com');
+    expect(client.createRoom).toHaveBeenCalled();
+  });
 });
