@@ -350,9 +350,9 @@ export class MatrixWatcher extends EventTarget {
           count++;
         }
       }
-      console.log(`[watcher:fetchDirects] seeded ${count} entries from m.direct`);
+      console.log(`[watcher:fetchDirects] (${this.#config.userId}) seeded ${count} entries from m.direct`);
     } catch {
-      console.log(`[watcher:fetchDirects] m.direct fetch failed (may not exist yet)`);
+      console.log(`[watcher:fetchDirects] (${this.#config.userId}) m.direct fetch failed (may not exist yet)`);
     }
   }
 
@@ -424,7 +424,7 @@ export class MatrixWatcher extends EventTarget {
    * Throws on network/auth errors — caller should handle gracefully.
    */
   async findOrCreateRoom(mxid: string): Promise<string> {
-    console.log(`[watcher:findOrCreateRoom] looking for ${mxid}`);
+    console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) looking for ${mxid}`);
     if (!this.#client) {
       throw new Error('MatrixWatcher: not connected — no client');
     }
@@ -432,10 +432,10 @@ export class MatrixWatcher extends EventTarget {
     // ── 1. Check in-memory map (populated from sync) ──────────────────
     let roomId = await this.#lookupDmRoom(mxid);
     if (roomId) {
-      console.log(`[watcher:findOrCreateRoom] cache hit → ${roomId}`);
+      console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) cache hit → ${roomId}`);
       return roomId;
     }
-    console.log(`[watcher:findOrCreateRoom] cache miss, falling back to m.direct`);
+    console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) cache miss, falling back to m.direct`);
 
     // ── 2. Explicit fallback: fetch m.direct ──────────────────────────
     try {
@@ -447,28 +447,28 @@ export class MatrixWatcher extends EventTarget {
         const joined = await this.#client.getJoinedRooms();
         const valid = roomIds.filter((rid) => joined.includes(rid));
         if (valid.length === 1) {
-          console.log(`[watcher:findOrCreateRoom] m.direct fallback, 1 valid → ${valid[0]}`);
+          console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) m.direct fallback, 1 valid → ${valid[0]}`);
           this.#directs.set(valid[0], mxid);
           return valid[0];
         }
         if (valid.length > 1) {
-          console.log(`[watcher:findOrCreateRoom] m.direct fallback, ${valid.length} valid, checking membership`);
+          console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) m.direct fallback, ${valid.length} valid, checking membership`);
           // Multiple rooms — pick the one where the target is a member.
           for (const rid of valid) {
             try {
               const members = await this.#client.getJoinedMembers(rid);
               if (Object.keys(members).includes(mxid)) {
-                console.log(`[watcher:findOrCreateRoom] membership verified → ${rid}`);
+                console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) membership verified → ${rid}`);
                 this.#directs.set(rid, mxid);
                 return rid;
               }
-              console.log(`[watcher:findOrCreateRoom] ${mxid} not in ${rid} members`);
+              console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) ${mxid} not in ${rid} members`);
             } catch {
-              console.log(`[watcher:findOrCreateRoom] membership check failed for ${rid}, skipping`);
+              console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) membership check failed for ${rid}, skipping`);
             }
           }
           // None verified — return the first joined room.
-          console.log(`[watcher:findOrCreateRoom] none verified, falling back to first → ${valid[0]}`);
+          console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) none verified, falling back to first → ${valid[0]}`);
           this.#directs.set(valid[0], mxid);
           return valid[0];
         }
@@ -478,7 +478,7 @@ export class MatrixWatcher extends EventTarget {
     }
 
     // ── 3. Create new DM room ─────────────────────────────────────────
-    console.log(`[watcher:findOrCreateRoom] creating new DM for ${mxid}`);
+    console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) creating new DM for ${mxid}`);
     roomId = await this.#client.createRoom({
       is_direct: true,
       invite: [mxid],
@@ -503,7 +503,7 @@ export class MatrixWatcher extends EventTarget {
       // room ID.  The next /sync will pick it up.
     }
 
-    console.log(`[watcher:findOrCreateRoom] created → ${roomId}`);
+    console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) created → ${roomId}`);
     this.#directs.set(roomId, mxid);
     return roomId;
   }
@@ -518,7 +518,7 @@ export class MatrixWatcher extends EventTarget {
     for (const [rid, peer] of this.#directs) {
       if (peer === mxid) candidates.push(rid);
     }
-    console.log(`[watcher:lookupDmRoom] ${mxid}: ${candidates.length} cached, map size=${this.#directs.size}`);
+    console.log(`[watcher:lookupDmRoom] (${this.#config.userId}) ${mxid}: ${candidates.length} cached, map size=${this.#directs.size}`);
     if (candidates.length === 0) return null;
 
     // Verify at least one is still joined and has the target as a member.
