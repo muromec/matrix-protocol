@@ -199,6 +199,11 @@ function joinedRoomsSource(client: JoinedRoomsLike, userId: string): DataSource<
 }
 // ── watcher ────────────────────────────────────────────────────────────────
 
+
+
+const DEBUG = process.env.DEBUG?.includes('matrix') || process.env.DEBUG?.includes('*');
+const debugLog = (...args: unknown[]) => { if (DEBUG) console.log(...args); };
+
 export class MatrixWatcher extends EventTarget {
   #config: WatcherConfig;
   #client: MatrixClient | null = null;
@@ -227,9 +232,9 @@ export class MatrixWatcher extends EventTarget {
   get ready(): Promise<void> { return this.#readyPromise; }
 
   async start(): Promise<void> {
-    console.log('[watcher:lifecycle] start() called');
+    debugLog('[watcher:lifecycle] start() called');
     if (this.#abortController) {
-      console.log('[watcher:lifecycle] already running, skipping');
+      debugLog('[watcher:lifecycle] already running, skipping');
       return;
     }
     this.#abortController = new AbortController();
@@ -399,9 +404,9 @@ export class MatrixWatcher extends EventTarget {
           count++;
         }
       }
-      console.log(`[watcher:createCache] (${this.#config.userId}) seeded ${count} entries`);
+      debugLog(`[watcher:createCache] (${this.#config.userId}) seeded ${count} entries`);
     } catch {
-      console.log(`[watcher:createCache] (${this.#config.userId}) m.direct fetch failed (may not exist yet)`);
+      debugLog(`[watcher:createCache] (${this.#config.userId}) m.direct fetch failed (may not exist yet)`);
     }
 
   }
@@ -413,9 +418,9 @@ export class MatrixWatcher extends EventTarget {
     if (!this.#dmCache) return;
     try {
       await this.#dmCache.warmup();
-      console.log(`[watcher:warmupCache] (${this.#config.userId}) complete`);
+      debugLog(`[watcher:warmupCache] (${this.#config.userId}) complete`);
     } catch {
-      console.log(`[watcher:warmupCache] (${this.#config.userId}) failed (non-fatal)`);
+      debugLog(`[watcher:warmupCache] (${this.#config.userId}) failed (non-fatal)`);
     }
   }
 
@@ -487,7 +492,7 @@ export class MatrixWatcher extends EventTarget {
    *  automatically propagates the result to all faster layers. */
   async findOrCreateRoom(mxid: string): Promise<string> {
     if (!this.#client) throw new Error('MatrixWatcher: not connected');
-    console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) looking for ${mxid}`);
+    debugLog(`[watcher:findOrCreateRoom] (${this.#config.userId}) looking for ${mxid}`);
 
     if (!this.#dmCache) {
       throw new Error('MatrixWatcher: dmCache not initialised');
@@ -498,7 +503,7 @@ export class MatrixWatcher extends EventTarget {
       throw new Error(`MatrixWatcher: could not find or create room for ${mxid}`);
     }
 
-    console.log(`[watcher:findOrCreateRoom] (${this.#config.userId}) → ${roomId}`);
+    debugLog(`[watcher:findOrCreateRoom] (${this.#config.userId}) → ${roomId}`);
     return roomId;
   }
 }
