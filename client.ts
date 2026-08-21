@@ -183,7 +183,7 @@ export class MatrixClient {
    * Returns parsed SyncResponse.  The caller should loop, passing
    * `next_batch` as `since` on each iteration.
    */
-  async sync(since?: string, timeoutMs = 30_000): Promise<SyncResponse> {
+  async sync(since?: string, timeoutMs = 30_000, signal?: AbortSignal): Promise<SyncResponse> {
     const params = new URLSearchParams();
     params.set("timeout", String(timeoutMs));
     if (since) params.set("since", since);
@@ -200,7 +200,7 @@ export class MatrixClient {
     params.set("set_presence", this.#currentPresence);
 
     const url = `${this.#baseUrl}/_matrix/client/v3/sync?${params.toString()}`;
-    const resp = await request("GET", url, undefined, this.#accessToken, this.#requestTimeout) as SyncResponse;
+    const resp = await request("GET", url, undefined, this.#accessToken, this.#requestTimeout, signal) as SyncResponse;
 
     // The Matrix spec says next_batch is always a string.
     // Some servers are broken and return it as a number — coerce.
@@ -457,6 +457,7 @@ async function request<T>(
   body: unknown,
   token: string | undefined,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<T> {
   const bodyStr = makeBody(method, urlString, body, token);
   const url = new URL(urlString);
@@ -475,6 +476,13 @@ async function request<T>(
   };
 
   return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) {
+      const err = new Error("The operation was aborted");
+      err.name = "AbortError";
+      reject(err);
+      return;
+    }
+
     const req = mod.request(options, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -517,6 +525,17 @@ async function request<T>(
         new MatrixError(0, "M_REQUEST_TIMEOUT", "Request timed out", null),
       );
     });
+
+    if (signal) {
+      const onAbort = () => {
+        const err = new Error("The operation was aborted");
+        err.name = "AbortError";
+        reject(err);
+        req.destroy();
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      req.once("close", () => signal.removeEventListener("abort", onAbort));
+    }
 
     if (bodyStr.length > 0) req.write(bodyStr);
     req.end();

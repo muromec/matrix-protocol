@@ -273,7 +273,7 @@ export class MatrixWatcher extends EventTarget {
         }
         since = this.#syncToken;
 
-        const initResp = await this.#client.sync(since, since ? undefined : 5000);
+        const initResp = await this.#client.sync(since, since ? undefined : 5000, signal);
         this.#processSync(initResp);
         since = initResp.next_batch;
 
@@ -284,7 +284,7 @@ export class MatrixWatcher extends EventTarget {
 
         while (!signal.aborted) {
           try {
-            const resp = await this.#client.sync(since, syncTimeout);
+            const resp = await this.#client.sync(since, syncTimeout, signal);
             this.#processSync(resp);
             since = resp.next_batch;
 

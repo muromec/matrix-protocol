@@ -279,6 +279,51 @@ describe("sync", () => {
     expect(err).toBeInstanceOf(MatrixError);
     expect((err as MatrixError).status).toBe(500);
   });
+
+  it("aborts an in-flight sync when the signal fires", async () => {
+    let syncReceived: (() => void) | undefined;
+    const syncReceivedP = new Promise<void>((r) => { syncReceived = r; });
+
+    // Homeserver that answers /login but holds the /sync long-poll open
+    // forever (mimics an idle long-poll mid-request).
+    const held = createServer((req, res) => {
+      if (req.method === "POST" && req.url?.includes("/login")) {
+        let body = "";
+        req.on("data", (c) => (body += c));
+        req.on("end", () => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            user_id: "@bot:matrix.org",
+            access_token: "tok_test",
+            device_id: "DEVICE_1",
+            home_server: "test.local",
+          }));
+        });
+        return;
+      }
+      // /sync: never respond.
+      syncReceived?.();
+    });
+    await new Promise<void>((resolve) => held.listen(0, "127.0.0.1", () => resolve()));
+    const port = (held.address() as { port: number }).port;
+
+    const client = await MatrixClient.login({
+      baseUrl: `http://127.0.0.1:${port}`,
+      userId: "@bot:matrix.org",
+      password: "secret",
+    });
+
+    const controller = new AbortController();
+    const syncPromise = client.sync(undefined, 30_000, controller.signal);
+
+    // Wait until the sync request is actually in flight before aborting.
+    await syncReceivedP;
+    controller.abort();
+
+    await expect(syncPromise).rejects.toMatchObject({ name: "AbortError" });
+
+    held.close();
+  });
 });
 
 // ── send ───────────────────────────────────────────────────────────────────

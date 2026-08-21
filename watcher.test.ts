@@ -334,3 +334,15 @@ describe('findOrCreateRoom', () => {
     expect(client.getAccountData).not.toHaveBeenCalled();
   });
 });
+
+// ── sync loop / abort wiring ────────────────────────────────────────────────
+
+describe('sync loop', () => {
+  it('passes an AbortSignal to client.sync', async () => {
+    const { client } = await boot();
+    expect(client.sync).toHaveBeenCalled();
+    const signal = client.sync.mock.calls[0]?.[2];
+    expect(signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
