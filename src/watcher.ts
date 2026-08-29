@@ -13,7 +13,7 @@
 import { MatrixClient, MatrixError, type SyncResponse } from './client.ts';
 import { MatrixMessage } from './message.ts';
 import { loadSyncToken, saveSyncToken } from './sync-token.ts';
-import { chain } from './data-sources/types.ts';
+import { chain } from './data-sources/chain.ts';
 import type { DataSource, Warmable } from './data-sources/types.ts';
 import { BiDiMemorySource } from './data-sources/bi-di-memory.ts';
 import type { DmKey } from './data-sources/bi-di-memory.ts';
