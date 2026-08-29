@@ -8,9 +8,9 @@
 //   POST /join        — join room, accept invite
 //   Error handling    — 401, 403, 5xx, network errors, timeouts
 
-import { describe, it, expect, afterAll } from "vitest";
-import { MatrixClient, MatrixError } from "./client.ts";
-import { createServer, type Server } from "node:http";
+import { describe, it, expect, afterAll } from 'vitest';
+import { MatrixClient, MatrixError } from '../src/client.ts';
+import { createServer, type Server } from 'node:http';
 
 // ── mock Matrix homeserver ─────────────────────────────────────────────────
 //
@@ -30,45 +30,34 @@ class MockMatrixServer {
   #server: Server;
   #queue: CannedResponse[] = [];
   #lastRequest: LastRequest = null;
-  #requestPromise: Promise<LastRequest>;
-  #resolveRequest!: (r: LastRequest) => void;
 
   port!: number;
   readonly listening: Promise<number>;
 
   constructor() {
-    this.#requestPromise = new Promise((resolve) => {
-      this.#resolveRequest = resolve;
-    });
-
     this.#server = createServer((req, res) => {
       const chunks: Buffer[] = [];
-      req.on("data", (chunk) => chunks.push(chunk));
-      req.on("end", () => {
-        const body = Buffer.concat(chunks).toString("utf-8");
+      req.on('data', (chunk) => chunks.push(chunk));
+      req.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf-8');
         this.#lastRequest = {
-          method: req.method ?? "GET",
-          path: req.url ?? "/",
+          method: req.method ?? 'GET',
+          path: req.url ?? '/',
           body,
         };
 
         // Pop the oldest queued response, or default to 200 {}.
         const canned = this.#queue.shift() ?? { status: 200, body: {} };
 
-        res.writeHead(canned.status, { "Content-Type": "application/json" });
+        res.writeHead(canned.status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(canned.body));
-
-        this.#resolveRequest(this.#lastRequest);
-        this.#requestPromise = new Promise((resolve) => {
-          this.#resolveRequest = resolve;
-        });
       });
     });
 
-    this.#server.on("error", () => {});
+    this.#server.on('error', () => {});
 
     this.listening = new Promise((resolve) => {
-      this.#server.listen(0, "127.0.0.1", () => {
+      this.#server.listen(0, '127.0.0.1', () => {
         this.port = (this.#server.address() as { port: number }).port;
         resolve(this.port);
       });
@@ -118,62 +107,62 @@ function baseUrl(srv: MockMatrixServer): string {
  */
 async function loginAndGetClient(srv: MockMatrixServer): Promise<MatrixClient> {
   srv.enqueue(200, {
-    user_id: "@bot:matrix.org",
-    access_token: "tok_test",
-    device_id: "DEVICE_1",
-    home_server: "test.local",
+    user_id: '@bot:matrix.org',
+    access_token: 'tok_test',
+    device_id: 'DEVICE_1',
+    home_server: 'test.local',
   });
   return MatrixClient.login({
     baseUrl: baseUrl(srv),
-    userId: "@bot:matrix.org",
-    password: "secret",
+    userId: '@bot:matrix.org',
+    password: 'secret',
   });
 }
 
 // ── login ──────────────────────────────────────────────────────────────────
 
-describe("login", () => {
-  it("logs in with password and returns a client", async () => {
+describe('login', () => {
+  it('logs in with password and returns a client', async () => {
     const srv = await newServer();
     srv.enqueue(200, {
-      user_id: "@bot:matrix.org",
-      access_token: "tok_abc123",
-      device_id: "DEVICE_1",
-      home_server: "matrix.org",
+      user_id: '@bot:matrix.org',
+      access_token: 'tok_abc123',
+      device_id: 'DEVICE_1',
+      home_server: 'matrix.org',
     });
 
     const client = await MatrixClient.login({
       baseUrl: baseUrl(srv),
-      userId: "@bot:matrix.org",
-      password: "secret",
-      deviceId: "my-device",
-      initialDeviceDisplayName: "Test Bot",
+      userId: '@bot:matrix.org',
+      password: 'secret',
+      deviceId: 'my-device',
+      initialDeviceDisplayName: 'Test Bot',
     });
 
-    expect(client.userId).toBe("@bot:matrix.org");
+    expect(client.userId).toBe('@bot:matrix.org');
 
     const req = srv.lastRequest;
-    expect(req?.method).toBe("POST");
-    expect(req?.path).toBe("/_matrix/client/v3/login");
+    expect(req?.method).toBe('POST');
+    expect(req?.path).toBe('/_matrix/client/v3/login');
 
-    const parsed = JSON.parse(req?.body ?? "{}");
-    expect(parsed.type).toBe("m.login.password");
-    expect(parsed.identifier.user).toBe("@bot:matrix.org");
-    expect(parsed.password).toBe("secret");
-    expect(parsed.device_id).toBe("my-device");
-    expect(parsed.initial_device_display_name).toBe("Test Bot");
+    const parsed = JSON.parse(req?.body ?? '{}');
+    expect(parsed.type).toBe('m.login.password');
+    expect(parsed.identifier.user).toBe('@bot:matrix.org');
+    expect(parsed.password).toBe('secret');
+    expect(parsed.device_id).toBe('my-device');
+    expect(parsed.initial_device_display_name).toBe('Test Bot');
   });
 
-  it("throws MatrixError on bad credentials (403)", async () => {
+  it('throws MatrixError on bad credentials (403)', async () => {
     const srv = await newServer();
-    srv.enqueue(403, { errcode: "M_FORBIDDEN", error: "Invalid password" });
+    srv.enqueue(403, { errcode: 'M_FORBIDDEN', error: 'Invalid password' });
 
     let err: unknown;
     try {
       await MatrixClient.login({
         baseUrl: baseUrl(srv),
-        userId: "@bot:matrix.org",
-        password: "wrong",
+        userId: '@bot:matrix.org',
+        password: 'wrong',
       });
     } catch (e) {
       err = e;
@@ -182,11 +171,11 @@ describe("login", () => {
     expect((err as MatrixError).status).toBe(403);
   });
 
-  it("throws MatrixError on 401 with soft_logout", async () => {
+  it('throws MatrixError on 401 with soft_logout', async () => {
     const srv = await newServer();
     srv.enqueue(401, {
-      errcode: "M_UNKNOWN_TOKEN",
-      error: "Soft logout",
+      errcode: 'M_UNKNOWN_TOKEN',
+      error: 'Soft logout',
       soft_logout: true,
     });
 
@@ -194,8 +183,8 @@ describe("login", () => {
     try {
       await MatrixClient.login({
         baseUrl: baseUrl(srv),
-        userId: "@bot:matrix.org",
-        password: "secret",
+        userId: '@bot:matrix.org',
+        password: 'secret',
       });
     } catch (e) {
       err = e;
@@ -207,24 +196,24 @@ describe("login", () => {
 
 // ── sync ───────────────────────────────────────────────────────────────────
 
-describe("sync", () => {
-  it("performs initial sync without since token", async () => {
+describe('sync', () => {
+  it('performs initial sync without since token', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
     srv.enqueue(200, {
-      next_batch: "s12345",
+      next_batch: 's12345',
       rooms: {
         join: {
-          "!room1:matrix.org": {
+          '!room1:matrix.org': {
             timeline: {
               events: [
                 {
-                  type: "m.room.message",
-                  sender: "@user:matrix.org",
-                  event_id: "$evt1",
+                  type: 'm.room.message',
+                  sender: '@user:matrix.org',
+                  event_id: '$evt1',
                   origin_server_ts: 1700000000000,
-                  room_id: "!room1:matrix.org",
-                  content: { msgtype: "m.text", body: "hello world" },
+                  room_id: '!room1:matrix.org',
+                  content: { msgtype: 'm.text', body: 'hello world' },
                 },
               ],
             },
@@ -235,40 +224,40 @@ describe("sync", () => {
 
     const resp = await client.sync();
 
-    expect(resp.next_batch).toBe("s12345");
+    expect(resp.next_batch).toBe('s12345');
     expect(resp.rooms?.join).toBeDefined();
 
     const req = srv.lastRequest;
-    expect(req?.method).toBe("GET");
-    expect(req?.path).toContain("/_matrix/client/v3/sync");
-    expect(req?.path).toContain("timeout=30000");
-    expect(req?.path).not.toContain("since=");
+    expect(req?.method).toBe('GET');
+    expect(req?.path).toContain('/_matrix/client/v3/sync');
+    expect(req?.path).toContain('timeout=30000');
+    expect(req?.path).not.toContain('since=');
   });
 
-  it("performs incremental sync with since token", async () => {
+  it('performs incremental sync with since token', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
-    srv.enqueue(200, { next_batch: "s99999", rooms: {} });
+    srv.enqueue(200, { next_batch: 's99999', rooms: {} });
 
-    const resp = await client.sync("s12345");
+    const resp = await client.sync('s12345');
 
-    expect(resp.next_batch).toBe("s99999");
-    expect(srv.lastRequest?.path).toContain("since=s12345");
+    expect(resp.next_batch).toBe('s99999');
+    expect(srv.lastRequest?.path).toContain('since=s12345');
   });
 
-  it("coerces numeric next_batch to string", async () => {
+  it('coerces numeric next_batch to string', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
     srv.enqueue(200, { next_batch: 42, rooms: {} });
 
     const resp = await client.sync();
-    expect(resp.next_batch).toBe("42");
+    expect(resp.next_batch).toBe('42');
   });
 
-  it("throws MatrixError on 500", async () => {
+  it('throws MatrixError on 500', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
-    srv.enqueue(500, { errcode: "M_UNKNOWN", error: "boom" });
+    srv.enqueue(500, { errcode: 'M_UNKNOWN', error: 'boom' });
 
     let err: unknown;
     try {
@@ -280,37 +269,41 @@ describe("sync", () => {
     expect((err as MatrixError).status).toBe(500);
   });
 
-  it("aborts an in-flight sync when the signal fires", async () => {
+  it('aborts an in-flight sync when the signal fires', async () => {
     let syncReceived: (() => void) | undefined;
-    const syncReceivedP = new Promise<void>((r) => { syncReceived = r; });
+    const syncReceivedP = new Promise<void>((r) => {
+      syncReceived = r;
+    });
 
     // Homeserver that answers /login but holds the /sync long-poll open
     // forever (mimics an idle long-poll mid-request).
     const held = createServer((req, res) => {
-      if (req.method === "POST" && req.url?.includes("/login")) {
-        let body = "";
-        req.on("data", (c) => (body += c));
-        req.on("end", () => {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({
-            user_id: "@bot:matrix.org",
-            access_token: "tok_test",
-            device_id: "DEVICE_1",
-            home_server: "test.local",
-          }));
+      if (req.method === 'POST' && req.url?.includes('/login')) {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              user_id: '@bot:matrix.org',
+              access_token: 'tok_test',
+              device_id: 'DEVICE_1',
+              home_server: 'test.local',
+            }),
+          );
         });
         return;
       }
       // /sync: never respond.
       syncReceived?.();
     });
-    await new Promise<void>((resolve) => held.listen(0, "127.0.0.1", () => resolve()));
+    await new Promise<void>((resolve) => held.listen(0, '127.0.0.1', () => resolve()));
     const port = (held.address() as { port: number }).port;
 
     const client = await MatrixClient.login({
       baseUrl: `http://127.0.0.1:${port}`,
-      userId: "@bot:matrix.org",
-      password: "secret",
+      userId: '@bot:matrix.org',
+      password: 'secret',
     });
 
     const controller = new AbortController();
@@ -320,7 +313,7 @@ describe("sync", () => {
     await syncReceivedP;
     controller.abort();
 
-    await expect(syncPromise).rejects.toMatchObject({ name: "AbortError" });
+    await expect(syncPromise).rejects.toMatchObject({ name: 'AbortError' });
 
     held.close();
   });
@@ -328,93 +321,91 @@ describe("sync", () => {
 
 // ── send ───────────────────────────────────────────────────────────────────
 
-describe("send", () => {
-  it("sends a message event to a room", async () => {
+describe('send', () => {
+  it('sends a message event to a room', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
-    srv.enqueue(200, { event_id: "$evt999" });
+    srv.enqueue(200, { event_id: '$evt999' });
 
-    const eventId = await client.send("!room1:matrix.org", "m.room.message", {
-      msgtype: "m.text",
-      body: "hi there",
+    const eventId = await client.send('!room1:matrix.org', 'm.room.message', {
+      msgtype: 'm.text',
+      body: 'hi there',
     });
 
-    expect(eventId).toBe("$evt999");
+    expect(eventId).toBe('$evt999');
 
     const req = srv.lastRequest;
-    expect(req?.method).toBe("PUT");
-    expect(req?.path).toContain(
-      "/rooms/!room1%3Amatrix.org/send/m.room.message/0",
-    );
-    expect(JSON.parse(req?.body ?? "{}").body).toBe("hi there");
+    expect(req?.method).toBe('PUT');
+    expect(req?.path).toContain('/rooms/!room1%3Amatrix.org/send/m.room.message/0');
+    expect(JSON.parse(req?.body ?? '{}').body).toBe('hi there');
   });
 
-  it("increments txnId on each send (idempotency)", async () => {
+  it('increments txnId on each send (idempotency)', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
 
-    srv.enqueue(200, { event_id: "$evt1" });
-    await client.send("!room1:matrix.org", "m.room.message", { body: "a" });
-    expect(srv.lastRequest?.path).toContain("/0");
+    srv.enqueue(200, { event_id: '$evt1' });
+    await client.send('!room1:matrix.org', 'm.room.message', { body: 'a' });
+    expect(srv.lastRequest?.path).toContain('/0');
 
-    srv.enqueue(200, { event_id: "$evt2" });
-    await client.send("!room1:matrix.org", "m.room.message", { body: "b" });
-    expect(srv.lastRequest?.path).toContain("/1");
+    srv.enqueue(200, { event_id: '$evt2' });
+    await client.send('!room1:matrix.org', 'm.room.message', { body: 'b' });
+    expect(srv.lastRequest?.path).toContain('/1');
 
-    srv.enqueue(200, { event_id: "$evt3" });
-    await client.send("!room1:matrix.org", "m.room.message", { body: "c" });
-    expect(srv.lastRequest?.path).toContain("/2");
+    srv.enqueue(200, { event_id: '$evt3' });
+    await client.send('!room1:matrix.org', 'm.room.message', { body: 'c' });
+    expect(srv.lastRequest?.path).toContain('/2');
   });
 
-  it("sendText is a convenience wrapper", async () => {
+  it('sendText is a convenience wrapper', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
-    srv.enqueue(200, { event_id: "$evt42" });
+    srv.enqueue(200, { event_id: '$evt42' });
 
-    await client.sendText("!room1:matrix.org", "plain text");
+    await client.sendText('!room1:matrix.org', 'plain text');
 
-    const body = JSON.parse(srv.lastRequest?.body ?? "{}");
-    expect(body.msgtype).toBe("m.text");
-    expect(body.body).toBe("plain text");
+    const body = JSON.parse(srv.lastRequest?.body ?? '{}');
+    expect(body.msgtype).toBe('m.text');
+    expect(body.body).toBe('plain text');
   });
 });
 
 // ── join ───────────────────────────────────────────────────────────────────
 
-describe("join", () => {
-  it("joins a room by alias", async () => {
+describe('join', () => {
+  it('joins a room by alias', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
-    srv.enqueue(200, { room_id: "!room1:matrix.org" });
+    srv.enqueue(200, { room_id: '!room1:matrix.org' });
 
-    const roomId = await client.join("#general:matrix.org");
+    const roomId = await client.join('#general:matrix.org');
 
-    expect(roomId).toBe("!room1:matrix.org");
+    expect(roomId).toBe('!room1:matrix.org');
 
     const req = srv.lastRequest;
-    expect(req?.method).toBe("POST");
-    expect(req?.path).toContain("/join/%23general%3Amatrix.org");
+    expect(req?.method).toBe('POST');
+    expect(req?.path).toContain('/join/%23general%3Amatrix.org');
   });
 
-  it("joins a room by ID", async () => {
+  it('joins a room by ID', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
-    srv.enqueue(200, { room_id: "!room1:matrix.org" });
+    srv.enqueue(200, { room_id: '!room1:matrix.org' });
 
-    const roomId = await client.join("!room1:matrix.org");
+    const roomId = await client.join('!room1:matrix.org');
 
-    expect(roomId).toBe("!room1:matrix.org");
-    expect(srv.lastRequest?.path).toContain("/join/!room1%3Amatrix.org");
+    expect(roomId).toBe('!room1:matrix.org');
+    expect(srv.lastRequest?.path).toContain('/join/!room1%3Amatrix.org');
   });
 
-  it("throws MatrixError when room not found", async () => {
+  it('throws MatrixError when room not found', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
-    srv.enqueue(404, { errcode: "M_NOT_FOUND", error: "Room not found" });
+    srv.enqueue(404, { errcode: 'M_NOT_FOUND', error: 'Room not found' });
 
     let err: unknown;
     try {
-      await client.join("#nope:matrix.org");
+      await client.join('#nope:matrix.org');
     } catch (e) {
       err = e;
     }
@@ -425,137 +416,137 @@ describe("join", () => {
 
 // ── profile ────────────────────────────────────────────────────────────────
 
-describe("getDisplayName", () => {
-  it("returns display name when set", async () => {
+describe('getDisplayName', () => {
+  it('returns display name when set', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
-    srv.enqueue(200, { displayname: "Alice" });
+    srv.enqueue(200, { displayname: 'Alice' });
 
-    const name = await client.getDisplayName("@alice:matrix.org");
-    expect(name).toBe("Alice");
+    const name = await client.getDisplayName('@alice:matrix.org');
+    expect(name).toBe('Alice');
   });
 
-  it("returns undefined on 404", async () => {
+  it('returns undefined on 404', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
-    srv.enqueue(404, { errcode: "M_NOT_FOUND", error: "No profile" });
+    srv.enqueue(404, { errcode: 'M_NOT_FOUND', error: 'No profile' });
 
     // getDisplayName catches 404 and returns undefined.
-    const name = await client.getDisplayName("@alice:matrix.org");
+    const name = await client.getDisplayName('@alice:matrix.org');
     expect(name).toBeUndefined();
   });
 });
 
 // ── account data ───────────────────────────────────────────────────────────
 
-describe("getAccountData", () => {
-  it("fetches m.direct account data", async () => {
+describe('getAccountData', () => {
+  it('fetches m.direct account data', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
     srv.enqueue(200, {
-      "@alice:matrix.org": ["!dm1:matrix.org"],
-      "@bob:matrix.org": ["!dm2:matrix.org"],
+      '@alice:matrix.org': ['!dm1:matrix.org'],
+      '@bob:matrix.org': ['!dm2:matrix.org'],
     });
 
-    const data = await client.getAccountData("m.direct");
+    const data = await client.getAccountData('m.direct');
     expect(data).toEqual({
-      "@alice:matrix.org": ["!dm1:matrix.org"],
-      "@bob:matrix.org": ["!dm2:matrix.org"],
+      '@alice:matrix.org': ['!dm1:matrix.org'],
+      '@bob:matrix.org': ['!dm2:matrix.org'],
     });
 
     const req = srv.lastRequest;
-    expect(req?.method).toBe("GET");
-    expect(req?.path).toContain("/user/%40bot%3Amatrix.org/account_data/m.direct");
+    expect(req?.method).toBe('GET');
+    expect(req?.path).toContain('/user/%40bot%3Amatrix.org/account_data/m.direct');
   });
 
-  it("returns empty object for missing account data (404)", async () => {
+  it('returns empty object for missing account data (404)', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
-    srv.enqueue(404, { errcode: "M_NOT_FOUND", error: "Not found" });
+    srv.enqueue(404, { errcode: 'M_NOT_FOUND', error: 'Not found' });
 
-    await expect(client.getAccountData("m.direct")).rejects.toThrow(MatrixError);
+    await expect(client.getAccountData('m.direct')).rejects.toThrow(MatrixError);
   });
 });
 
-describe("setAccountData", () => {
-  it("sets m.direct account data", async () => {
+describe('setAccountData', () => {
+  it('sets m.direct account data', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
     srv.enqueue(200, {});
 
-    await client.setAccountData("m.direct", {
-      "@alice:matrix.org": ["!dm1:matrix.org"],
+    await client.setAccountData('m.direct', {
+      '@alice:matrix.org': ['!dm1:matrix.org'],
     });
 
     const req = srv.lastRequest;
-    expect(req?.method).toBe("PUT");
-    expect(req?.path).toContain("/user/%40bot%3Amatrix.org/account_data/m.direct");
-    const body = JSON.parse(req?.body ?? "{}");
-    expect(body["@alice:matrix.org"]).toEqual(["!dm1:matrix.org"]);
+    expect(req?.method).toBe('PUT');
+    expect(req?.path).toContain('/user/%40bot%3Amatrix.org/account_data/m.direct');
+    const body = JSON.parse(req?.body ?? '{}');
+    expect(body['@alice:matrix.org']).toEqual(['!dm1:matrix.org']);
   });
 });
 
 // ── room management ───────────────────────────────────────────────────────
 
-describe("createRoom", () => {
-  it("creates a DM room with invite", async () => {
+describe('createRoom', () => {
+  it('creates a DM room with invite', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
-    srv.enqueue(200, { room_id: "!newdm:matrix.org" });
+    srv.enqueue(200, { room_id: '!newdm:matrix.org' });
 
     const roomId = await client.createRoom({
       is_direct: true,
-      invite: ["@alice:matrix.org"],
-      preset: "trusted_private_chat",
+      invite: ['@alice:matrix.org'],
+      preset: 'trusted_private_chat',
     });
 
-    expect(roomId).toBe("!newdm:matrix.org");
+    expect(roomId).toBe('!newdm:matrix.org');
 
     const req = srv.lastRequest;
-    expect(req?.method).toBe("POST");
-    expect(req?.path).toBe("/_matrix/client/v3/createRoom");
-    const body = JSON.parse(req?.body ?? "{}");
+    expect(req?.method).toBe('POST');
+    expect(req?.path).toBe('/_matrix/client/v3/createRoom');
+    const body = JSON.parse(req?.body ?? '{}');
     expect(body.is_direct).toBe(true);
-    expect(body.invite).toEqual(["@alice:matrix.org"]);
-    expect(body.preset).toBe("trusted_private_chat");
+    expect(body.invite).toEqual(['@alice:matrix.org']);
+    expect(body.preset).toBe('trusted_private_chat');
   });
 
-  it("creates a named room", async () => {
+  it('creates a named room', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
-    srv.enqueue(200, { room_id: "!named:matrix.org" });
+    srv.enqueue(200, { room_id: '!named:matrix.org' });
 
-    const roomId = await client.createRoom({ name: "Test Room" });
-    expect(roomId).toBe("!named:matrix.org");
+    const roomId = await client.createRoom({ name: 'Test Room' });
+    expect(roomId).toBe('!named:matrix.org');
 
-    const body = JSON.parse(srv.lastRequest?.body ?? "{}");
-    expect(body.name).toBe("Test Room");
+    const body = JSON.parse(srv.lastRequest?.body ?? '{}');
+    expect(body.name).toBe('Test Room');
   });
 
-  it("throws MatrixError on failure", async () => {
+  it('throws MatrixError on failure', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
-    srv.enqueue(403, { errcode: "M_FORBIDDEN", error: "Not allowed" });
+    srv.enqueue(403, { errcode: 'M_FORBIDDEN', error: 'Not allowed' });
 
     await expect(client.createRoom({})).rejects.toThrow(MatrixError);
   });
 });
 
-describe("getJoinedRooms", () => {
-  it("returns list of joined room IDs", async () => {
+describe('getJoinedRooms', () => {
+  it('returns list of joined room IDs', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
-    srv.enqueue(200, { joined_rooms: ["!room1:matrix.org", "!room2:matrix.org"] });
+    srv.enqueue(200, { joined_rooms: ['!room1:matrix.org', '!room2:matrix.org'] });
 
     const rooms = await client.getJoinedRooms();
-    expect(rooms).toEqual(["!room1:matrix.org", "!room2:matrix.org"]);
+    expect(rooms).toEqual(['!room1:matrix.org', '!room2:matrix.org']);
 
     const req = srv.lastRequest;
-    expect(req?.method).toBe("GET");
-    expect(req?.path).toBe("/_matrix/client/v3/joined_rooms");
+    expect(req?.method).toBe('GET');
+    expect(req?.path).toBe('/_matrix/client/v3/joined_rooms');
   });
 
-  it("returns empty array when no rooms joined", async () => {
+  it('returns empty array when no rooms joined', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
     srv.enqueue(200, { joined_rooms: [] });
@@ -565,37 +556,37 @@ describe("getJoinedRooms", () => {
   });
 });
 
-describe("getJoinedMembers", () => {
-  it("returns member list for a room", async () => {
+describe('getJoinedMembers', () => {
+  it('returns member list for a room', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
     srv.enqueue(200, {
       joined: {
-        "@butler:matrix.org": { display_name: "Butler" },
-        "@alice:matrix.org": { display_name: "Alice" },
+        '@butler:matrix.org': { display_name: 'Butler' },
+        '@alice:matrix.org': { display_name: 'Alice' },
       },
     });
 
-    const members = await client.getJoinedMembers("!room1:matrix.org");
-    expect(Object.keys(members)).toEqual(["@butler:matrix.org", "@alice:matrix.org"]);
-    expect(members["@alice:matrix.org"].display_name).toBe("Alice");
+    const members = await client.getJoinedMembers('!room1:matrix.org');
+    expect(Object.keys(members)).toEqual(['@butler:matrix.org', '@alice:matrix.org']);
+    expect(members['@alice:matrix.org'].display_name).toBe('Alice');
 
     const req = srv.lastRequest;
-    expect(req?.method).toBe("GET");
-    expect(req?.path).toContain("/rooms/!room1%3Amatrix.org/joined_members");
+    expect(req?.method).toBe('GET');
+    expect(req?.path).toContain('/rooms/!room1%3Amatrix.org/joined_members');
   });
 
-  it("detects this as a DM (exactly 2 members)", async () => {
+  it('detects this as a DM (exactly 2 members)', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
     srv.enqueue(200, {
       joined: {
-        "@bot:matrix.org": {},
-        "@alice:matrix.org": {},
+        '@bot:matrix.org': {},
+        '@alice:matrix.org': {},
       },
     });
 
-    const members = await client.getJoinedMembers("!dm:matrix.org");
+    const members = await client.getJoinedMembers('!dm:matrix.org');
     expect(Object.keys(members).length).toBe(2);
     // The caller (watcher) uses this to detect DMs.
   });
@@ -603,77 +594,76 @@ describe("getJoinedMembers", () => {
 
 // ── connection errors ──────────────────────────────────────────────────────
 
-describe("connection errors", () => {
-  it("throws MatrixError with M_CONNECTION_ERROR on refused connection", async () => {
+describe('connection errors', () => {
+  it('throws MatrixError with M_CONNECTION_ERROR on refused connection', async () => {
     let err: unknown;
     try {
       await MatrixClient.login({
-        baseUrl: "http://127.0.0.1:1",
-        userId: "@bot:matrix.org",
-        password: "secret",
+        baseUrl: 'http://127.0.0.1:1',
+        userId: '@bot:matrix.org',
+        password: 'secret',
         requestTimeout: 1000,
       });
     } catch (e) {
       err = e;
     }
     expect(err).toBeInstanceOf(MatrixError);
-    expect((err as MatrixError).errcode).toBe("M_CONNECTION_ERROR");
+    expect((err as MatrixError).errcode).toBe('M_CONNECTION_ERROR');
   });
 
-  it("throws MatrixError with M_REQUEST_TIMEOUT on timeout", async () => {
+  it('throws MatrixError with M_REQUEST_TIMEOUT on timeout', async () => {
     let err: unknown;
     try {
       await MatrixClient.login({
-        baseUrl: "http://192.0.2.1:80",
-        userId: "@bot:matrix.org",
-        password: "secret",
+        baseUrl: 'http://192.0.2.1:80',
+        userId: '@bot:matrix.org',
+        password: 'secret',
         requestTimeout: 500,
       });
     } catch (e) {
       err = e;
     }
     expect(err).toBeInstanceOf(MatrixError);
-    expect((err as MatrixError).errcode).toBe("M_REQUEST_TIMEOUT");
+    expect((err as MatrixError).errcode).toBe('M_REQUEST_TIMEOUT');
   });
 });
 
 // ── sendTyping ───────────────────────────────────────────────────────────────
 
-describe("sendTyping", () => {
-  it("sends typing=true with correct URL and body", async () => {
+describe('sendTyping', () => {
+  it('sends typing=true with correct URL and body', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
 
     srv.enqueue(200, {});
-    await client.sendTyping("!room1:matrix.org", true);
+    await client.sendTyping('!room1:matrix.org', true);
 
     const req = srv.lastRequest;
-    expect(req?.method).toBe("PUT");
-    expect(req?.path).toContain("/typing/");
-    expect(req?.path).toContain("!room1%3Amatrix.org");
-    const body = JSON.parse(req?.body ?? "{}");
+    expect(req?.method).toBe('PUT');
+    expect(req?.path).toContain('/typing/');
+    expect(req?.path).toContain('!room1%3Amatrix.org');
+    const body = JSON.parse(req?.body ?? '{}');
     expect(body.typing).toBe(true);
     expect(body.timeout).toBe(15_000);
   });
 
-  it("sends typing=false to stop typing", async () => {
+  it('sends typing=false to stop typing', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
 
     srv.enqueue(200, {});
-    await client.sendTyping("!room1:matrix.org", false, 30_000);
+    await client.sendTyping('!room1:matrix.org', false, 30_000);
 
-    const body = JSON.parse(srv.lastRequest?.body ?? "{}");
+    const body = JSON.parse(srv.lastRequest?.body ?? '{}');
     expect(body.typing).toBe(false);
     expect(body.timeout).toBe(30_000);
   });
 
-  it("throws MatrixError on server error", async () => {
+  it('throws MatrixError on server error', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
 
-    srv.enqueue(500, { errcode: "M_UNKNOWN", error: "boom" });
-    await expect(client.sendTyping("!room1:matrix.org", true))
-      .rejects.toThrow(MatrixError);
+    srv.enqueue(500, { errcode: 'M_UNKNOWN', error: 'boom' });
+    await expect(client.sendTyping('!room1:matrix.org', true)).rejects.toThrow(MatrixError);
   });
 });

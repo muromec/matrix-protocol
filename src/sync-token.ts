@@ -6,8 +6,8 @@
 //
 // Both functions are no-ops when `path` is undefined (caller opted out).
 
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 /**
  * Read a saved `next_batch` token from disk.
@@ -18,10 +18,10 @@ import { dirname } from "node:path";
 export async function loadSyncToken(path: string | undefined): Promise<string | undefined> {
   if (!path) return undefined;
   try {
-    const raw = await readFile(path, "utf-8");
+    const raw = await readFile(path, 'utf-8');
     return raw.trim() || undefined;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw err;
   }
 }
@@ -39,5 +39,5 @@ export async function saveSyncToken(path: string | undefined, token: string): Pr
   } catch {
     // Directory already exists (or can't be created) — proceed anyway.
   }
-  await writeFile(path, token, "utf-8");
+  await writeFile(path, token, 'utf-8');
 }

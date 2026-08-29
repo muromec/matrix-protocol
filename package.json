@@ -1,8 +1,44 @@
 {
-  "name": "matrix-connector",
+  "name": "matrix-protocol",
   "version": "0.1.0",
   "description": "Zero-dependency Matrix CS API client for bot use — login, sync, send, room management",
   "type": "module",
-  "main": "./index.ts",
-  "types": "./index.ts"
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./export-room-history": {
+      "types": "./dist/export-room-history.d.ts",
+      "import": "./dist/export-room-history.js"
+    }
+  },
+  "bin": {
+    "matrix-export-room-history": "./dist/export-room-history-cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "test": "bash scripts/test.sh",
+    "lint": "bash scripts/lint.sh -D correctness -D suspicious src/*.ts src/data-sources/*.ts test/*.ts",
+    "typecheck": "bash scripts/tsc.sh --noEmit",
+    "format": "bash scripts/fmt.sh --write src/*.ts src/data-sources/*.ts test/*.ts",
+    "format:check": "bash scripts/fmt.sh --check src/*.ts src/data-sources/*.ts test/*.ts",
+    "build": "bash scripts/build.sh",
+    "validate": "bash scripts/validate.sh",
+    "setup": "cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit",
+    "oxlint": "bash scripts/lint.sh -D correctness -D suspicious src/*.ts src/data-sources/*.ts test/*.ts",
+    "oxfmt": "bash scripts/fmt.sh --write src/*.ts src/data-sources/*.ts test/*.ts",
+    "oxfmt:check": "bash scripts/fmt.sh --check src/*.ts src/data-sources/*.ts test/*.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "oxfmt": "^0.58.0",
+    "oxlint": "^1.68.0",
+    "typescript": "7",
+    "vitest": "^4.1.7"
+  }
 }

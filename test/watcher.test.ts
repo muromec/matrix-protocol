@@ -1,11 +1,11 @@
 // ── MatrixWatcher Unit Tests ───────────────────────────────────────────────
 //
-// Tests for vendored/matrix-connector/watcher.ts.
+// Tests for src/watcher.ts.
 // Mocks MatrixClient at the module level — no HTTP server needed.
 // Covers resolveDm, findOrCreateRoom, and all catch{} paths.
 //
-// Run:  npx vitest run vendored/matrix-connector/watcher.test.ts
-//       bun test vendored/matrix-connector/watcher.test.ts
+// Run:  bun test test/watcher.test.ts
+//       npx vitest run test/watcher.test.ts
 
 import { describe, it, expect, vi } from 'vitest';
 
@@ -13,7 +13,7 @@ import { describe, it, expect, vi } from 'vitest';
 
 let mockClient: MockClient;
 
-vi.mock('./client.ts', () => ({
+vi.mock('../src/client.ts', () => ({
   MatrixClient: {
     login: vi.fn().mockImplementation(async () => {
       mockClient = freshMockClient();
@@ -31,10 +31,8 @@ vi.mock('./client.ts', () => ({
   },
 }));
 
-const { MatrixWatcher } = await import('./watcher.ts');
-import type { WatcherConfig } from './watcher.ts';
-import { BiDiMemorySource } from '../../src/data-sources/bi-di-memory.ts';
-import type { DmKey } from '../../src/data-sources/bi-di-memory.ts';
+const { MatrixWatcher: MatrixWatcherCtor } = await import('../src/watcher.ts');
+import type { MatrixWatcher, WatcherConfig } from '../src/watcher.ts';
 
 interface MockClient {
   userId: string;
@@ -93,10 +91,13 @@ async function boot(): Promise<{
 }> {
   mockClient = null!;
 
-  const w = new MatrixWatcher(makeConfig({ reconnectDelay: 1 }));
+  const w = new MatrixWatcherCtor(makeConfig({ reconnectDelay: 1 }));
   const startPromise = w.start();
 
   const start = Date.now();
+  // mockClient is assigned by the async MatrixClient.login mock; the loop
+  // just waits for that to land.
+  // eslint-disable-next-line no-unmodified-loop-condition
   while (!mockClient) {
     if (Date.now() - start > 2000) throw new Error('boot: login never completed');
     await new Promise((r) => setTimeout(r, 1));
@@ -122,7 +123,7 @@ async function boot(): Promise<{
 
 describe('resolveDm', () => {
   it('returns isDm=false when no client', async () => {
-    const w = new MatrixWatcher(makeConfig());
+    const w = new MatrixWatcherCtor(makeConfig());
     const result = await w.resolveDm('!unknown:example.com');
     expect(result.isDm).toBe(false);
     expect(result.members).toEqual([]);
@@ -183,7 +184,7 @@ describe('resolveDm', () => {
 
 describe('findOrCreateRoom', () => {
   it('throws when no client (not booted)', async () => {
-    const w = new MatrixWatcher(makeConfig());
+    const w = new MatrixWatcherCtor(makeConfig());
     await expect(w.findOrCreateRoom('@alice:ex.com')).rejects.toThrow(
       'MatrixWatcher: not connected',
     );
@@ -345,4 +346,3 @@ describe('sync loop', () => {
     expect(signal).toBeInstanceOf(AbortSignal);
   });
 });
-

@@ -18,8 +18,8 @@
 //   - Transaction IDs (`txnId`) are generated as a monotonic counter to
 //     guarantee idempotency within a client session.
 
-import * as https from "node:https";
-import * as http from "node:http";
+import * as https from 'node:https';
+import * as http from 'node:http';
 
 // ── types ──────────────────────────────────────────────────────────────────
 
@@ -108,7 +108,7 @@ export class MatrixError extends Error {
     this.status = status;
     this.errcode = errcode;
     this.body = body;
-    this.name = "MatrixError";
+    this.name = 'MatrixError';
   }
 }
 
@@ -128,12 +128,12 @@ export class MatrixClient {
     userId: string,
     requestTimeout: number,
   ) {
-    this.#baseUrl = baseUrl.replace(/\/+$/, ""); // strip trailing slashes
+    this.#baseUrl = baseUrl.replace(/\/+$/, ''); // strip trailing slashes
     this.#accessToken = accessToken;
     this.#userId = userId;
     this.#requestTimeout = requestTimeout;
     this.#txnCounter = 0;
-    this.#currentPresence = "online";
+    this.#currentPresence = 'online';
   }
 
   // ── static factory: login ──────────────────────────────────────────────
@@ -143,12 +143,12 @@ export class MatrixClient {
    * Throws MatrixError on bad credentials.
    */
   static async login(config: MatrixConfig): Promise<MatrixClient> {
-    const baseUrl = config.baseUrl.replace(/\/+$/, "");
+    const baseUrl = config.baseUrl.replace(/\/+$/, '');
     const timeout = config.requestTimeout ?? 30_000;
 
     const body: Record<string, unknown> = {
-      type: "m.login.password",
-      identifier: { type: "m.id.user", user: config.userId },
+      type: 'm.login.password',
+      identifier: { type: 'm.id.user', user: config.userId },
       password: config.password,
     };
     if (config.deviceId) body.device_id = config.deviceId;
@@ -156,7 +156,13 @@ export class MatrixClient {
       body.initial_device_display_name = config.initialDeviceDisplayName;
     }
 
-    const resp = await request("POST", `${baseUrl}/_matrix/client/v3/login`, body, undefined, timeout) as LoginResponse;
+    const resp = (await request(
+      'POST',
+      `${baseUrl}/_matrix/client/v3/login`,
+      body,
+      undefined,
+      timeout,
+    )) as LoginResponse;
 
     return new MatrixClient(baseUrl, resp.access_token, resp.user_id, timeout);
   }
@@ -185,26 +191,36 @@ export class MatrixClient {
    */
   async sync(since?: string, timeoutMs = 30_000, signal?: AbortSignal): Promise<SyncResponse> {
     const params = new URLSearchParams();
-    params.set("timeout", String(timeoutMs));
-    if (since) params.set("since", since);
+    params.set('timeout', String(timeoutMs));
+    if (since) params.set('since', since);
     // Filter out presence and typing notifications — we only care
     // about room events.
-    params.set("filter", JSON.stringify({
-      presence: { types: [] },
-      account_data: { types: ["m.direct"] },
-      room: { timeline: { types: ["m.room.message", "m.room.member"] } },
-    }));
+    params.set(
+      'filter',
+      JSON.stringify({
+        presence: { types: [] },
+        account_data: { types: ['m.direct'] },
+        room: { timeline: { types: ['m.room.message', 'm.room.member'] } },
+      }),
+    );
     // Carry our current presence on every sync so the server doesn't
     // silently bump us back to "online" (the Matrix spec default when
     // set_presence is omitted — see CS API /sync docs).
-    params.set("set_presence", this.#currentPresence);
+    params.set('set_presence', this.#currentPresence);
 
     const url = `${this.#baseUrl}/_matrix/client/v3/sync?${params.toString()}`;
-    const resp = await request("GET", url, undefined, this.#accessToken, this.#requestTimeout, signal) as SyncResponse;
+    const resp = (await request(
+      'GET',
+      url,
+      undefined,
+      this.#accessToken,
+      this.#requestTimeout,
+      signal,
+    )) as SyncResponse;
 
     // The Matrix spec says next_batch is always a string.
     // Some servers are broken and return it as a number — coerce.
-    if (typeof resp.next_batch !== "string") {
+    if (typeof resp.next_batch !== 'string') {
       resp.next_batch = String(resp.next_batch);
     }
     return resp;
@@ -221,15 +237,16 @@ export class MatrixClient {
    *
    * Returns the assigned `event_id`.
    */
-  async send(
-    roomId: string,
-    eventType: string,
-    content: Record<string, unknown>,
-  ): Promise<string> {
+  async send(roomId: string, eventType: string, content: Record<string, unknown>): Promise<string> {
     const txnId = `${this.#txnCounter++}`;
-    const url =
-      `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/${encodeURIComponent(eventType)}/${txnId}`;
-    const resp = await request("PUT", url, content, this.#accessToken, this.#requestTimeout) as SendResponse;
+    const url = `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/${encodeURIComponent(eventType)}/${txnId}`;
+    const resp = (await request(
+      'PUT',
+      url,
+      content,
+      this.#accessToken,
+      this.#requestTimeout,
+    )) as SendResponse;
     return resp.event_id;
   }
 
@@ -241,8 +258,8 @@ export class MatrixClient {
     body: string,
     extra: Record<string, unknown> = {},
   ): Promise<string> {
-    return this.send(roomId, "m.room.message", {
-      msgtype: "m.text",
+    return this.send(roomId, 'm.room.message', {
+      msgtype: 'm.text',
       body,
       ...extra,
     });
@@ -257,10 +274,10 @@ export class MatrixClient {
     formattedBody: string,
     extra: Record<string, unknown> = {},
   ): Promise<string> {
-    return this.send(roomId, "m.room.message", {
-      msgtype: "m.text",
+    return this.send(roomId, 'm.room.message', {
+      msgtype: 'm.text',
       body,
-      format: "org.matrix.custom.html",
+      format: 'org.matrix.custom.html',
       formatted_body: formattedBody,
       ...extra,
     });
@@ -277,9 +294,10 @@ export class MatrixClient {
    * (`#room:matrix.org`).
    */
   async join(roomIdOrAlias: string): Promise<string> {
-    const url =
-      `${this.#baseUrl}/_matrix/client/v3/join/${encodeURIComponent(roomIdOrAlias)}`;
-    const resp = await request("POST", url, {}, this.#accessToken, this.#requestTimeout) as { room_id: string };
+    const url = `${this.#baseUrl}/_matrix/client/v3/join/${encodeURIComponent(roomIdOrAlias)}`;
+    const resp = (await request('POST', url, {}, this.#accessToken, this.#requestTimeout)) as {
+      room_id: string;
+    };
     return resp.room_id;
   }
 
@@ -288,10 +306,15 @@ export class MatrixClient {
    * not set.
    */
   async getDisplayName(userId: string): Promise<string | undefined> {
-    const url =
-      `${this.#baseUrl}/_matrix/client/v3/profile/${encodeURIComponent(userId)}/displayname`;
+    const url = `${this.#baseUrl}/_matrix/client/v3/profile/${encodeURIComponent(userId)}/displayname`;
     try {
-      const resp = await request("GET", url, undefined, this.#accessToken, this.#requestTimeout) as { displayname?: string };
+      const resp = (await request(
+        'GET',
+        url,
+        undefined,
+        this.#accessToken,
+        this.#requestTimeout,
+      )) as { displayname?: string };
       return resp.displayname;
     } catch (err) {
       if (err instanceof MatrixError && err.status === 404) return undefined;
@@ -306,16 +329,14 @@ export class MatrixClient {
    */
   async setPresence(presence: string): Promise<void> {
     this.#currentPresence = presence;
-    const url =
-      `${this.#baseUrl}/_matrix/client/v3/presence/${encodeURIComponent(this.#userId)}/status`;
-    await request("PUT", url, { presence }, this.#accessToken, this.#requestTimeout);
+    const url = `${this.#baseUrl}/_matrix/client/v3/presence/${encodeURIComponent(this.#userId)}/status`;
+    await request('PUT', url, { presence }, this.#accessToken, this.#requestTimeout);
   }
 
   /** Set the user-visible display name for this account. */
   async setDisplayName(displayname: string): Promise<void> {
-    const url =
-      `${this.#baseUrl}/_matrix/client/v3/profile/${encodeURIComponent(this.#userId)}/displayname`;
-    await request("PUT", url, { displayname }, this.#accessToken, this.#requestTimeout);
+    const url = `${this.#baseUrl}/_matrix/client/v3/profile/${encodeURIComponent(this.#userId)}/displayname`;
+    await request('PUT', url, { displayname }, this.#accessToken, this.#requestTimeout);
   }
 
   /**
@@ -332,27 +353,36 @@ export class MatrixClient {
    * https://spec.matrix.org/v1.13/client-server-api/#receiving-notifications
    */
   async sendReadMarker(roomId: string, eventId: string): Promise<void> {
-    const url =
-      `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/read_markers`;
-    await request("POST", url, {
-      "m.fully_read": eventId,
-      "m.read": eventId,
-    }, this.#accessToken, this.#requestTimeout);
+    const url = `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/read_markers`;
+    await request(
+      'POST',
+      url,
+      {
+        'm.fully_read': eventId,
+        'm.read': eventId,
+      },
+      this.#accessToken,
+      this.#requestTimeout,
+    );
   }
 
   async sendTyping(roomId: string, typing: boolean, timeoutMs = 15_000): Promise<void> {
-    const url =
-      `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/typing/${encodeURIComponent(this.#userId)}`;
-    await request("PUT", url, { typing, timeout: timeoutMs }, this.#accessToken, this.#requestTimeout);
+    const url = `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/typing/${encodeURIComponent(this.#userId)}`;
+    await request(
+      'PUT',
+      url,
+      { typing, timeout: timeoutMs },
+      this.#accessToken,
+      this.#requestTimeout,
+    );
   }
 
   /**
    * Leave a room.
    */
   async leave(roomId: string): Promise<void> {
-    const url =
-      `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/leave`;
-    await request("POST", url, {}, this.#accessToken, this.#requestTimeout);
+    const url = `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/leave`;
+    await request('POST', url, {}, this.#accessToken, this.#requestTimeout);
   }
 
   // ── account data ───────────────────────────────────────────────────────
@@ -364,9 +394,14 @@ export class MatrixClient {
    * Returns the parsed content object, or throws MatrixError on failure.
    */
   async getAccountData(type: string): Promise<Record<string, unknown>> {
-    const url =
-      `${this.#baseUrl}/_matrix/client/v3/user/${encodeURIComponent(this.#userId)}/account_data/${encodeURIComponent(type)}`;
-    return await request("GET", url, undefined, this.#accessToken, this.#requestTimeout) as Record<string, unknown>;
+    const url = `${this.#baseUrl}/_matrix/client/v3/user/${encodeURIComponent(this.#userId)}/account_data/${encodeURIComponent(type)}`;
+    return (await request(
+      'GET',
+      url,
+      undefined,
+      this.#accessToken,
+      this.#requestTimeout,
+    )) as Record<string, unknown>;
   }
 
   /**
@@ -375,9 +410,8 @@ export class MatrixClient {
    * `type` is the event type, `content` is the content dict.
    */
   async setAccountData(type: string, content: Record<string, unknown>): Promise<void> {
-    const url =
-      `${this.#baseUrl}/_matrix/client/v3/user/${encodeURIComponent(this.#userId)}/account_data/${encodeURIComponent(type)}`;
-    await request("PUT", url, content, this.#accessToken, this.#requestTimeout);
+    const url = `${this.#baseUrl}/_matrix/client/v3/user/${encodeURIComponent(this.#userId)}/account_data/${encodeURIComponent(type)}`;
+    await request('PUT', url, content, this.#accessToken, this.#requestTimeout);
   }
 
   // ── room management ────────────────────────────────────────────────────
@@ -392,7 +426,9 @@ export class MatrixClient {
    */
   async createRoom(opts: CreateRoomRequest): Promise<string> {
     const url = `${this.#baseUrl}/_matrix/client/v3/createRoom`;
-    const resp = await request("POST", url, opts, this.#accessToken, this.#requestTimeout) as { room_id: string };
+    const resp = (await request('POST', url, opts, this.#accessToken, this.#requestTimeout)) as {
+      room_id: string;
+    };
     return resp.room_id;
   }
 
@@ -403,7 +439,13 @@ export class MatrixClient {
    */
   async getJoinedRooms(): Promise<string[]> {
     const url = `${this.#baseUrl}/_matrix/client/v3/joined_rooms`;
-    const resp = await request("GET", url, undefined, this.#accessToken, this.#requestTimeout) as { joined_rooms: string[] };
+    const resp = (await request(
+      'GET',
+      url,
+      undefined,
+      this.#accessToken,
+      this.#requestTimeout,
+    )) as { joined_rooms: string[] };
     return resp.joined_rooms;
   }
 
@@ -412,41 +454,39 @@ export class MatrixClient {
    *
    * Returns a map of MXID → { display_name, avatar_url }.
    */
-  async getJoinedMembers(roomId: string): Promise<Record<string, { display_name?: string; avatar_url?: string }>> {
+  async getJoinedMembers(
+    roomId: string,
+  ): Promise<Record<string, { display_name?: string; avatar_url?: string }>> {
     const url = `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/joined_members`;
-    const resp = await request("GET", url, undefined, this.#accessToken, this.#requestTimeout) as { joined: Record<string, { display_name?: string; avatar_url?: string }> };
+    const resp = (await request(
+      'GET',
+      url,
+      undefined,
+      this.#accessToken,
+      this.#requestTimeout,
+    )) as { joined: Record<string, { display_name?: string; avatar_url?: string }> };
     return resp.joined;
   }
 }
 
 // ── HTTP helpers ───────────────────────────────────────────────────────────
 
-function makeBody(
-  method: string,
-  url: string,
-  body: unknown,
-  token: string | undefined,
-): string {
+function makeBody(method: string, body: unknown): string {
   // Serialize body to JSON string. GET requests have no body.
-  if (method === "GET" || body === undefined) return "";
+  if (method === 'GET' || body === undefined) return '';
   return JSON.stringify(body);
 }
 
-function makeHeaders(
-  method: string,
-  url: string,
-  token: string | undefined,
-  bodyStr: string,
-): Record<string, string> {
+function makeHeaders(token: string | undefined, bodyStr: string): Record<string, string> {
   const headers: Record<string, string> = {
-    "User-Agent": "matrix-connector/0.1",
+    'User-Agent': 'matrix-connector/0.1',
   };
   if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
+    headers['Authorization'] = `Bearer ${token}`;
   }
   if (bodyStr.length > 0) {
-    headers["Content-Type"] = "application/json";
-    headers["Content-Length"] = String(Buffer.byteLength(bodyStr));
+    headers['Content-Type'] = 'application/json';
+    headers['Content-Length'] = String(Buffer.byteLength(bodyStr));
   }
   return headers;
 }
@@ -459,12 +499,12 @@ async function request<T>(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<T> {
-  const bodyStr = makeBody(method, urlString, body, token);
+  const bodyStr = makeBody(method, body);
   const url = new URL(urlString);
-  const isHttps = url.protocol === "https:";
+  const isHttps = url.protocol === 'https:';
   const mod = isHttps ? https : http;
 
-  const headers = makeHeaders(method, urlString, token, bodyStr);
+  const headers = makeHeaders(token, bodyStr);
 
   const options: http.RequestOptions & https.RequestOptions = {
     hostname: url.hostname,
@@ -477,17 +517,17 @@ async function request<T>(
 
   return new Promise<T>((resolve, reject) => {
     if (signal?.aborted) {
-      const err = new Error("The operation was aborted");
-      err.name = "AbortError";
+      const err = new Error('The operation was aborted');
+      err.name = 'AbortError';
       reject(err);
       return;
     }
 
     const req = mod.request(options, (res) => {
       const chunks: Buffer[] = [];
-      res.on("data", (chunk: Buffer) => chunks.push(chunk));
-      res.on("end", () => {
-        const raw = Buffer.concat(chunks).toString("utf-8");
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf-8');
         let parsed: unknown;
         try {
           parsed = raw.length > 0 ? JSON.parse(raw) : {};
@@ -505,7 +545,7 @@ async function request<T>(
         reject(
           new MatrixError(
             res.statusCode ?? 0,
-            (err.errcode as string) ?? "M_UNKNOWN",
+            (err.errcode as string) ?? 'M_UNKNOWN',
             (err.error as string) ?? `HTTP ${res.statusCode}`,
             parsed,
           ),
@@ -513,28 +553,24 @@ async function request<T>(
       });
     });
 
-    req.on("error", (err) => {
-      reject(
-        new MatrixError(0, "M_CONNECTION_ERROR", err.message, null),
-      );
+    req.on('error', (err) => {
+      reject(new MatrixError(0, 'M_CONNECTION_ERROR', err.message, null));
     });
 
-    req.on("timeout", () => {
+    req.on('timeout', () => {
       req.destroy();
-      reject(
-        new MatrixError(0, "M_REQUEST_TIMEOUT", "Request timed out", null),
-      );
+      reject(new MatrixError(0, 'M_REQUEST_TIMEOUT', 'Request timed out', null));
     });
 
     if (signal) {
       const onAbort = () => {
-        const err = new Error("The operation was aborted");
-        err.name = "AbortError";
+        const err = new Error('The operation was aborted');
+        err.name = 'AbortError';
         reject(err);
         req.destroy();
       };
-      signal.addEventListener("abort", onAbort, { once: true });
-      req.once("close", () => signal.removeEventListener("abort", onAbort));
+      signal.addEventListener('abort', onAbort, { once: true });
+      req.once('close', () => signal.removeEventListener('abort', onAbort));
     }
 
     if (bodyStr.length > 0) req.write(bodyStr);

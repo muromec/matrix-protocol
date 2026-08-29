@@ -14,7 +14,7 @@
 // Unlike EmailMessage, there's no async parsing step — Matrix events are
 // already structured JSON.  Construction is always synchronous.
 
-import type { MatrixEvent } from "./client.ts";
+import type { MatrixEvent } from './client.ts';
 
 // ── types ──────────────────────────────────────────────────────────────────
 
@@ -63,11 +63,11 @@ export class MatrixMessage {
     this.inbound = false;
     this.event = null;
     this.headers = {} as MatrixMessageHeaders;
-    this.text = "";
+    this.text = '';
     this.html = undefined;
-    this.from = "";
-    this.#outboundRoomId = "";
-    this.#outboundBody = "";
+    this.from = '';
+    this.#outboundRoomId = '';
+    this.#outboundBody = '';
   }
 
   // ── constructors ────────────────────────────────────────────────────────
@@ -98,19 +98,19 @@ export class MatrixMessage {
       roomId,
       eventId: event.event_id,
       originServerTs: event.origin_server_ts,
-      msgtype: (content.msgtype as string) ?? "m.unknown",
+      msgtype: (content.msgtype as string) ?? 'm.unknown',
     };
 
     (self as { from: string }).from = event.sender;
 
     // Extract plain-text body.
-    const body = typeof content.body === "string" ? content.body.trim() : "";
+    const body = typeof content.body === 'string' ? content.body.trim() : '';
     (self as { text: string }).text = body;
 
     // Extract HTML formatted body if present.
     const format = content.format as string | undefined;
     const formattedBody = content.formatted_body as string | undefined;
-    if (format === "org.matrix.custom.html" && typeof formattedBody === "string") {
+    if (format === 'org.matrix.custom.html' && typeof formattedBody === 'string') {
       (self as { html: string | undefined }).html = formattedBody;
     } else {
       (self as { html: string | undefined }).html = undefined;
@@ -132,13 +132,13 @@ export class MatrixMessage {
     self.#outboundInReplyTo = opts.inReplyTo;
 
     (self as { text: string }).text = opts.body;
-    (self as { from: string }).from = ""; // outbound messages have no sender
+    (self as { from: string }).from = ''; // outbound messages have no sender
     (self as { headers: MatrixMessageHeaders }).headers = {
-      sender: "",
+      sender: '',
       roomId: opts.roomId,
-      eventId: "",
+      eventId: '',
       originServerTs: Date.now(),
-      msgtype: "m.text",
+      msgtype: 'm.text',
     };
 
     return self;
@@ -154,18 +154,18 @@ export class MatrixMessage {
   /** Build the JSON content dict for PUT /send. */
   toContent(): Record<string, unknown> {
     if (this.inbound) {
-      throw new Error("Cannot send an inbound message — use compose() instead");
+      throw new Error('Cannot send an inbound message — use compose() instead');
     }
 
     const content: Record<string, unknown> = {
-      msgtype: "m.text",
+      msgtype: 'm.text',
       body: this.#outboundBody,
     };
 
     // Rich reply: include m.in_reply_to fallback and formatted_body.
     if (this.#outboundInReplyTo) {
-      content["m.relates_to"] = {
-        "m.in_reply_to": { event_id: this.#outboundInReplyTo },
+      content['m.relates_to'] = {
+        'm.in_reply_to': { event_id: this.#outboundInReplyTo },
       };
 
       // Build a quoted fallback body (Matrix clients strip this out).
@@ -173,12 +173,11 @@ export class MatrixMessage {
       content.body = fallbackBody;
 
       if (this.#outboundFormattedBody) {
-        content.format = "org.matrix.custom.html";
-        content.formatted_body =
-          `<mx-reply><blockquote><a href="https://matrix.to/#/.../${this.#outboundInReplyTo}">In reply to</a></blockquote></mx-reply>${this.#outboundFormattedBody}`;
+        content.format = 'org.matrix.custom.html';
+        content.formatted_body = `<mx-reply><blockquote><a href="https://matrix.to/#/.../${this.#outboundInReplyTo}">In reply to</a></blockquote></mx-reply>${this.#outboundFormattedBody}`;
       }
     } else if (this.#outboundFormattedBody) {
-      content.format = "org.matrix.custom.html";
+      content.format = 'org.matrix.custom.html';
       content.formatted_body = this.#outboundFormattedBody;
     }
 
@@ -191,7 +190,7 @@ export class MatrixMessage {
    */
   reply(opts: { body: string; formattedBody?: string }): MatrixMessage {
     if (!this.inbound || !this.event) {
-      throw new Error("Can only reply to inbound messages");
+      throw new Error('Can only reply to inbound messages');
     }
     return MatrixMessage.compose({
       roomId: this.roomId,
@@ -223,10 +222,10 @@ export class MatrixMessage {
     }
 
     if (this.text) {
-      lines.push("");
+      lines.push('');
       lines.push(this.text);
     }
 
-    return lines.join("\n");
+    return lines.join('\n');
   }
 }

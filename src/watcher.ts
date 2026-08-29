@@ -10,13 +10,13 @@
 //     immediately on response)
 //   - Deduplication via event_id tracking
 
-import { MatrixClient, MatrixError, type MatrixEvent, type SyncResponse } from "./client.ts";
-import { MatrixMessage } from "./message.ts";
-import { loadSyncToken, saveSyncToken } from "./sync-token.ts";
-import { chain } from "../../src/data-sources/types.ts";
-import type { DataSource, Warmable } from "../../src/data-sources/types.ts";
-import { BiDiMemorySource } from "../../src/data-sources/bi-di-memory.ts";
-import type { DmKey } from "../../src/data-sources/bi-di-memory.ts";
+import { MatrixClient, MatrixError, type SyncResponse } from './client.ts';
+import { MatrixMessage } from './message.ts';
+import { loadSyncToken, saveSyncToken } from './sync-token.ts';
+import { chain } from './data-sources/types.ts';
+import type { DataSource, Warmable } from './data-sources/types.ts';
+import { BiDiMemorySource } from './data-sources/bi-di-memory.ts';
+import type { DmKey } from './data-sources/bi-di-memory.ts';
 
 // ── types ──────────────────────────────────────────────────────────────────
 
@@ -32,7 +32,7 @@ export interface WatcherConfig {
 }
 
 export interface WatcherEvent {
-  type: "connected" | "disconnected" | "message" | "invite" | "error";
+  type: 'connected' | 'disconnected' | 'message' | 'invite' | 'error';
   message?: MatrixMessage;
   roomId?: string;
   inviter?: string;
@@ -63,7 +63,7 @@ function mDirectSource(client: MDirectLike): DataSource<DmKey, string> & Warmabl
   async function fetch(): Promise<Record<string, string[]>> {
     if (cache) return cache;
     try {
-      cache = await client.getAccountData('m.direct') as Record<string, string[]>;
+      cache = (await client.getAccountData('m.direct')) as Record<string, string[]>;
     } catch {
       cache = {};
     }
@@ -98,7 +98,9 @@ function mDirectSource(client: MDirectLike): DataSource<DmKey, string> & Warmabl
       }
     },
 
-    invalidate(_key: DmKey): void { cache = null; },
+    invalidate(_key: DmKey): void {
+      cache = null;
+    },
 
     /** Validate m.direct entries against joined rooms.  Removes stale
      *  rooms that are no longer joined.  Called once at startup. */
@@ -137,13 +139,16 @@ function mDirectSource(client: MDirectLike): DataSource<DmKey, string> & Warmabl
           try {
             await client.setAccountData('m.direct', directs);
             cache = directs;
-          } catch { /* best-effort */ }
+          } catch {
+            /* best-effort */
+          }
         }
-      } catch { /* can't validate, skip */ }
+      } catch {
+        /* can't validate, skip */
+      }
     },
   };
 }
-
 
 /** Joined-rooms scan DataSource.
  *
@@ -167,9 +172,13 @@ function joinedRoomsSource(client: JoinedRoomsLike, userId: string): DataSource<
             try {
               const members = await client.getJoinedMembers(roomId);
               if (Object.keys(members).includes(key.value)) return roomId;
-            } catch { /* skip */ }
+            } catch {
+              /* skip */
+            }
           }
-        } catch { /* can't list rooms */ }
+        } catch {
+          /* can't list rooms */
+        }
 
         // Source of truth miss: create the room.  The chain
         // automatically propagates the result to faster layers.
@@ -189,20 +198,26 @@ function joinedRoomsSource(client: JoinedRoomsLike, userId: string): DataSource<
         if (ids.length !== 2) return null;
         const peer = ids.find((id) => id !== userId);
         return peer ?? null;
-      } catch { /* can't check */ }
+      } catch {
+        /* can't check */
+      }
       return null;
     },
 
-    async set(_key: DmKey, _value: string): Promise<void> { /* source of truth */ },
-    invalidate(_key: DmKey): void { /* source of truth */ },
+    async set(_key: DmKey, _value: string): Promise<void> {
+      /* source of truth */
+    },
+    invalidate(_key: DmKey): void {
+      /* source of truth */
+    },
   };
 }
 // ── watcher ────────────────────────────────────────────────────────────────
 
-
-
 const DEBUG = process.env.DEBUG?.includes('matrix') || process.env.DEBUG?.includes('*');
-const debugLog = (...args: unknown[]) => { if (DEBUG) console.log(...args); };
+const debugLog = (...args: unknown[]) => {
+  if (DEBUG) console.log(...args);
+};
 
 export class MatrixWatcher extends EventTarget {
   #config: WatcherConfig;
@@ -224,12 +239,16 @@ export class MatrixWatcher extends EventTarget {
   constructor(config: WatcherConfig) {
     super();
     this.#config = config;
-    this.#readyPromise = new Promise((resolve) => { this.#readyResolve = resolve; });
+    this.#readyPromise = new Promise((resolve) => {
+      this.#readyResolve = resolve;
+    });
   }
 
   // ── public API ──────────────────────────────────────────────────────────
 
-  get ready(): Promise<void> { return this.#readyPromise; }
+  get ready(): Promise<void> {
+    return this.#readyPromise;
+  }
 
   async start(): Promise<void> {
     debugLog('[watcher:lifecycle] start() called');
@@ -255,10 +274,12 @@ export class MatrixWatcher extends EventTarget {
           initialDeviceDisplayName: this.#config.initialDeviceDisplayName,
         });
 
-        this.#readyPromise = new Promise((resolve) => { this.#readyResolve = resolve; });
-        this.#emit({ type: "connected" });
+        this.#readyPromise = new Promise((resolve) => {
+          this.#readyResolve = resolve;
+        });
+        this.#emit({ type: 'connected' });
 
-        this.#client.setPresence("online").catch(() => {});
+        this.#client.setPresence('online').catch(() => {});
         if (this.#config.initialDeviceDisplayName && this.#client) {
           this.#client.setDisplayName(this.#config.initialDeviceDisplayName).catch(() => {});
         }
@@ -299,11 +320,11 @@ export class MatrixWatcher extends EventTarget {
         break;
       } catch (err) {
         if (signal.aborted) break;
-        this.#emit({ type: "error", error: err as Error });
+        this.#emit({ type: 'error', error: err as Error });
       }
 
       if (signal.aborted) break;
-      this.#emit({ type: "disconnected" });
+      this.#emit({ type: 'disconnected' });
       await this.#sleep(reconnectDelay, signal);
     }
   }
@@ -316,12 +337,10 @@ export class MatrixWatcher extends EventTarget {
   // ── events ──────────────────────────────────────────────────────────────
 
   on(
-    type: "message" | "connected" | "disconnected" | "invite" | "error",
+    type: 'message' | 'connected' | 'disconnected' | 'invite' | 'error',
     listener: (event: WatcherEvent) => void,
   ): void {
-    this.addEventListener(type, (e) =>
-      listener((e as CustomEvent<WatcherEvent>).detail),
-    );
+    this.addEventListener(type, (e) => listener((e as CustomEvent<WatcherEvent>).detail));
   }
 
   #emit(event: WatcherEvent): void {
@@ -337,19 +356,19 @@ export class MatrixWatcher extends EventTarget {
       for (const [roomId, roomData] of Object.entries(resp.rooms.invite)) {
         const events = roomData?.invite_state?.events ?? [];
         const memberEvent = events.find(
-          (e) => e.type === "m.room.member" && e.state_key === this.#client!.userId,
+          (e) => e.type === 'm.room.member' && e.state_key === this.#client!.userId,
         );
-        const inviter = memberEvent?.sender ?? "unknown";
+        const inviter = memberEvent?.sender ?? 'unknown';
         const membership = memberEvent?.content?.membership;
 
-        if (membership === "invite") {
+        if (membership === 'invite') {
           this.#joinRoom(roomId).catch((err) => {
             this.#emit({
-              type: "error",
+              type: 'error',
               error: new Error(`Failed to join room ${roomId}: ${(err as Error).message}`),
             });
           });
-          this.#emit({ type: "invite", roomId, inviter });
+          this.#emit({ type: 'invite', roomId, inviter });
         }
       }
     }
@@ -365,15 +384,15 @@ export class MatrixWatcher extends EventTarget {
           this.#trackSeen(event.event_id);
 
           if (event.sender === this.#client.userId) continue;
-          if (event.type !== "m.room.message") continue;
+          if (event.type !== 'm.room.message') continue;
 
           const msgtype = event.content?.msgtype as string | undefined;
-          if (msgtype !== "m.text" && msgtype !== "m.notice") continue;
+          if (msgtype !== 'm.text' && msgtype !== 'm.notice') continue;
 
           const msg = MatrixMessage.fromEvent(event, roomId);
           if (msg.text.length === 0) continue;
 
-          this.#emit({ type: "message", message: msg, roomId });
+          this.#emit({ type: 'message', message: msg, roomId });
         }
       }
     }
@@ -406,11 +425,11 @@ export class MatrixWatcher extends EventTarget {
       }
       debugLog(`[watcher:createCache] (${this.#config.userId}) seeded ${count} entries`);
     } catch {
-      debugLog(`[watcher:createCache] (${this.#config.userId}) m.direct fetch failed (may not exist yet)`);
+      debugLog(
+        `[watcher:createCache] (${this.#config.userId}) m.direct fetch failed (may not exist yet)`,
+      );
     }
-
   }
-
 
   /** Validate the m.direct layer against joined rooms, removing stale
    *  entries.  Called once at startup after #createCache(). */
@@ -441,7 +460,6 @@ export class MatrixWatcher extends EventTarget {
     }
   }
 
-
   async #joinRoom(roomId: string): Promise<void> {
     if (!this.#client) return;
     await this.#client.join(roomId);
@@ -464,16 +482,27 @@ export class MatrixWatcher extends EventTarget {
     return new Promise((resolve) => {
       if (signal.aborted) return resolve();
       const timer = setTimeout(resolve, ms);
-      signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
+      signal.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
     });
   }
 
   // ── public methods ──────────────────────────────────────────────────────
 
-  get client(): MatrixClient | null { return this.#client; }
+  get client(): MatrixClient | null {
+    return this.#client;
+  }
 
   /** Expose the in-memory cache layer (for tests). */
-  get dmMemory(): BiDiMemorySource | null { return this.#dmMemory; }
+  get dmMemory(): BiDiMemorySource | null {
+    return this.#dmMemory;
+  }
 
   /** Resolve whether a room is a DM via the 3-layer chain. */
   async resolveDm(roomId: string): Promise<{ isDm: boolean; members: string[] }> {
@@ -514,15 +543,15 @@ function isRecoverable(err: unknown): boolean {
   if (!err) return false;
 
   if (err instanceof MatrixError) {
-    if (err.errcode === "M_REQUEST_TIMEOUT") return true;
-    if (err.errcode === "M_CONNECTION_ERROR") return true;
+    if (err.errcode === 'M_REQUEST_TIMEOUT') return true;
+    if (err.errcode === 'M_CONNECTION_ERROR') return true;
     if (err.status >= 500 && err.status < 600) return true;
     if (err.status === 429) return true;
     return false;
   }
 
   if (err instanceof Error) {
-    if (err.name === "AbortError") return false;
+    if (err.name === 'AbortError') return false;
     return true;
   }
 

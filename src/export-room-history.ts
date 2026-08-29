@@ -1,11 +1,11 @@
-#!/usr/bin/env bun
 // ── Matrix Room Exporter ──────────────────────────────────────────────────
 //
-// Standalone script: dumps raw Matrix room messages to stdout as JSON Lines.
-// Uses the vendored MatrixClient directly — no persona system dependency.
+// Exports room-message history from a Matrix homeserver to stdout as JSON
+// Lines.  Library form: import `main` or `parseArgs`.  The CLI shim lives in
+// `export-room-history-cli.ts` (wired as the `matrix-export-room-history` bin).
 //
-// Usage:
-//   bun run vendored/matrix-connector/export-room.ts \
+// Usage (CLI):
+//   matrix-export-room-history \
 //     --baseUrl https://matrix.example.com \
 //     --userId @butler:example.com \
 //     --password <password> \
@@ -15,9 +15,9 @@
 //
 // Output: one JSON object per line on stdout.  Progress on stderr.
 
-import { MatrixClient, MatrixError } from './client.ts';
+import { MatrixError } from './client.ts';
 
-interface Args {
+export interface Args {
   baseUrl: string;
   userId: string;
   password: string;
@@ -27,12 +27,12 @@ interface Args {
   direction: 'b' | 'f';
 }
 
-function parseArgs(): Args {
+export function parseArgs(argv: string[]): Args {
   const args: Record<string, string> = {};
-  for (let i = 2; i < process.argv.length; i++) {
-    if (process.argv[i].startsWith('--')) {
-      const key = process.argv[i].slice(2);
-      const val = process.argv[i + 1];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i].startsWith('--')) {
+      const key = argv[i].slice(2);
+      const val = argv[i + 1];
       if (val && !val.startsWith('--')) {
         args[key] = val;
         i++;
@@ -43,10 +43,11 @@ function parseArgs(): Args {
   }
 
   if (!args.baseUrl || !args.userId || !args.password || !args.roomId) {
-    console.error('Usage: bun run export-room.ts \\');
-    console.error('  --baseUrl <url> --userId <mxid> --password <pw> --roomId <id> \\');
-    console.error('  [--from <cursor>] [--limit <N>] [--direction b|f]');
-    process.exit(1);
+    throw new Error(
+      'Usage: matrix-export-room-history \\\n' +
+        '  --baseUrl <url> --userId <mxid> --password <pw> --roomId <id> \\\n' +
+        '  [--from <cursor>] [--limit <N>] [--direction b|f]',
+    );
   }
 
   return {
@@ -86,9 +87,10 @@ async function request(
     if (!resp.ok) {
       const errBody = await resp.text().catch(() => '');
       throw new MatrixError(
-        `HTTP ${resp.status}: ${errBody.slice(0, 200)}`,
-        'M_UNKNOWN',
         resp.status,
+        'M_UNKNOWN',
+        `HTTP ${resp.status}: ${errBody.slice(0, 200)}`,
+        errBody,
       );
     }
 
@@ -98,12 +100,12 @@ async function request(
   }
 }
 
-async function main() {
-  const args = parseArgs();
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  const args = parseArgs(argv);
 
   // 1. Login.
   console.error(`Logging in as ${args.userId}...`);
-  const loginResp = await request(
+  const loginResp = (await request(
     'POST',
     `${args.baseUrl}/_matrix/client/v3/login`,
     {
@@ -112,13 +114,15 @@ async function main() {
       password: args.password,
       initial_device_display_name: 'export-script',
     },
-    '', // no token yet
-  ) as { access_token: string; device_id: string; user_id: string };
+    '',
+  )) as { access_token: string; device_id: string; user_id: string };
 
   const token = loginResp.access_token;
 
   // 2. Fetch messages.
-  console.error(`Fetching room ${args.roomId} (limit ${args.limit}, dir ${args.direction}${args.from ? ', from ' + args.from.slice(0, 8) + '...' : ''})...`);
+  console.error(
+    `Fetching room ${args.roomId} (limit ${args.limit}, dir ${args.direction}${args.from ? ', from ' + args.from.slice(0, 8) + '...' : ''})...`,
+  );
 
   let from = args.from;
   let fetched = 0;
@@ -127,12 +131,14 @@ async function main() {
   while (fetched < args.limit) {
     const remaining = Math.min(args.limit - fetched, 1000);
 
-    const url = new URL(`${args.baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(args.roomId)}/messages`);
+    const url = new URL(
+      `${args.baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(args.roomId)}/messages`,
+    );
     url.searchParams.set('dir', args.direction);
     url.searchParams.set('limit', String(remaining));
     if (from) url.searchParams.set('from', from);
 
-    const resp = await request('GET', url.toString(), null, token) as {
+    const resp = (await request('GET', url.toString(), null, token)) as {
       chunk: unknown[];
       start: string;
       end: string;
@@ -152,8 +158,3 @@ async function main() {
 
   console.error(`Done. ${fetched} messages. End cursor: ${end || 'none'}`);
 }
-
-main().catch((err) => {
-  console.error('Fatal:', (err as Error).message);
-  process.exit(1);
-});
