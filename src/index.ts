@@ -10,3 +10,17 @@ export {
 } from './client.ts';
 export { MatrixMessage, type MatrixMessageHeaders, type OutgoingMatrixMessage } from './message.ts';
 export { MatrixWatcher, type WatcherConfig, type WatcherEvent } from './watcher.ts';
+export {
+  RTC_MEMBER_TYPES,
+  isRtcMemberEvent,
+  slotOf,
+  fociOf,
+  readRtcMembership,
+  rtcCallsInRoom,
+  rtcFociFromWellKnown,
+  type RtcFocus,
+  type RtcMemberRef,
+  type RtcMembershipContent,
+  type RtcMembership,
+  type RtcCall,
+} from './rtc.ts';

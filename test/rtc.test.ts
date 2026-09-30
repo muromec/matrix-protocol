@@ -1,0 +1,193 @@
+import { describe, it, expect } from 'vitest';
+import type { MatrixEvent } from '../src/client.ts';
+import {
+  isRtcMemberEvent,
+  readRtcMembership,
+  rtcCallsInRoom,
+  rtcFociFromWellKnown,
+  slotOf,
+} from '../src/rtc.ts';
+
+// ── fixtures ────────────────────────────────────────────────────────────────
+//
+// The legacy fixture is one membership event exactly as a real client left it
+// in a real room (2026-09-30): it joined a call and then left, so the content
+// is empty and the membership survives only in `unsigned.prev_content`.
+
+const LEGACY_CONTENT = {
+  application: 'm.call',
+  call_id: '',
+  device_id: 'LPJNXXHPNU',
+  expires: 14400000,
+  foci_preferred: [
+    {
+      livekit_alias: '!lIqimBZRAIrSvjejvG:muromec.nl',
+      livekit_service_url: 'https://livekit.muromec.nl',
+      type: 'livekit',
+    },
+  ],
+  focus_active: { focus_selection: 'multi_sfu', type: 'livekit' },
+  'm.call.intent': 'audio',
+  membershipID: '@ip:muromec.nl:LPJNXXHPNU',
+  scope: 'm.room',
+};
+
+const LEGACY_LEFT: MatrixEvent = {
+  type: 'org.matrix.msc3401.call.member',
+  state_key: '_@ip:muromec.nl_LPJNXXHPNU_m.call',
+  sender: '@ip:muromec.nl',
+  content: {},
+  event_id: '$G8_iFAQ2kQ9IRAuK5Zw5R6t6cIFf1Wpc7IckFqcmFXc',
+  room_id: '!lIqimBZRAIrSvjejvG:muromec.nl',
+  origin_server_ts: 1790775289703,
+  unsigned: { prev_content: LEGACY_CONTENT, age: 18214 },
+};
+
+const LEGACY_IN_CALL: MatrixEvent = {
+  ...LEGACY_LEFT,
+  content: LEGACY_CONTENT,
+  event_id: '$in-call',
+  unsigned: { age: 10 },
+};
+
+const MODERN_IN_CALL: MatrixEvent = {
+  type: 'm.rtc.member',
+  state_key: '@ip:muromec.nl:AB12CD34EF',
+  sender: '@ip:muromec.nl',
+  content: {
+    application: 'm.call',
+    call_id: '',
+    slot_id: 'm.call#ROOM',
+    member: { user_id: '@ip:muromec.nl', device_id: 'AB12CD34EF', id: '@ip:muromec.nl:AB12CD34EF' },
+    membership: 'join',
+    expires: 1790780000000,
+    transports: [{ type: 'livekit', livekit_service_url: 'https://livekit.muromec.nl' }],
+  },
+  event_id: '$modern',
+  room_id: '!lIqimBZRAIrSvjejvG:muromec.nl',
+  origin_server_ts: 1790776000000,
+};
+
+const A_MESSAGE: MatrixEvent = {
+  type: 'm.room.message',
+  sender: '@ip:muromec.nl',
+  content: { msgtype: 'm.text', body: 'hello' },
+  event_id: '$msg',
+  room_id: '!lIqimBZRAIrSvjejvG:muromec.nl',
+  origin_server_ts: 1790775000000,
+};
+
+// ── tests ───────────────────────────────────────────────────────────────────
+
+describe('isRtcMemberEvent', () => {
+  it('knows all three generations and nothing else', () => {
+    for (const type of ['org.matrix.msc3401.call.member', 'm.call.member', 'm.rtc.member']) {
+      expect(isRtcMemberEvent({ type })).toBe(true);
+    }
+    expect(isRtcMemberEvent({ type: 'm.room.message' })).toBe(false);
+  });
+});
+
+describe('slotOf', () => {
+  it('defaults an empty call id to the room-scoped slot', () => {
+    expect(slotOf({ application: 'm.call', call_id: '' })).toBe('m.call#ROOM');
+  });
+
+  it('names a call that has an id', () => {
+    expect(slotOf({ application: 'm.call', call_id: 'c1' })).toBe('m.call#c1');
+  });
+
+  it('prefers an explicit slot id', () => {
+    expect(slotOf({ application: 'm.call', call_id: 'c1', slot_id: 'm.call#elsewhere' })).toBe(
+      'm.call#elsewhere',
+    );
+  });
+});
+
+describe('readRtcMembership', () => {
+  it('reads a leave: empty content, membership in prev_content', () => {
+    const m = readRtcMembership(LEGACY_LEFT);
+    expect(m).not.toBeNull();
+    expect(m!.inCall).toBe(false);
+    expect(m!.slot).toBe('m.call#ROOM');
+    expect(m!.userId).toBe('@ip:muromec.nl');
+    expect(m!.deviceId).toBe('LPJNXXHPNU');
+    expect(m!.memberId).toBe('@ip:muromec.nl:LPJNXXHPNU');
+    expect(m!.application).toBe('m.call');
+    expect(m!.callId).toBe('');
+    expect(m!.intent).toBe('audio');
+    expect(m!.scope).toBe('m.room');
+    expect(m!.expires).toBe(14400000);
+    expect(m!.foci).toHaveLength(1);
+    expect(m!.foci[0].livekit_service_url).toBe('https://livekit.muromec.nl');
+    expect(m!.previous?.call_id).toBe('');
+  });
+
+  it('reads a member that is in the call', () => {
+    const m = readRtcMembership(LEGACY_IN_CALL)!;
+    expect(m.inCall).toBe(true);
+    expect(m.foci[0].type).toBe('livekit');
+  });
+
+  it('reads the current shape, where the slot and the member block are stated', () => {
+    const m = readRtcMembership(MODERN_IN_CALL)!;
+    expect(m.inCall).toBe(true);
+    expect(m.slot).toBe('m.call#ROOM');
+    expect(m.memberId).toBe('@ip:muromec.nl:AB12CD34EF');
+    expect(m.deviceId).toBe('AB12CD34EF');
+    expect(m.foci[0].livekit_service_url).toBe('https://livekit.muromec.nl');
+  });
+
+  it('returns null for an event that is not a membership', () => {
+    expect(readRtcMembership(A_MESSAGE)).toBeNull();
+  });
+});
+
+describe('rtcCallsInRoom', () => {
+  it('reports a call nobody is in any more, and who left it', () => {
+    const calls = rtcCallsInRoom([LEGACY_LEFT]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].slot).toBe('m.call#ROOM');
+    expect(calls[0].members).toHaveLength(0);
+    expect(calls[0].all).toHaveLength(1);
+    expect(calls[0].focus).toBeUndefined();
+  });
+
+  it('counts only the members whose content says they are in the call', () => {
+    const calls = rtcCallsInRoom([LEGACY_LEFT, LEGACY_IN_CALL]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].members).toHaveLength(1);
+    expect(calls[0].all).toHaveLength(2);
+    expect(calls[0].focus?.livekit_service_url).toBe('https://livekit.muromec.nl');
+    expect(calls[0].intent).toBe('audio');
+  });
+
+  it('keeps two slots apart', () => {
+    const calls = rtcCallsInRoom([LEGACY_IN_CALL, MODERN_IN_CALL]);
+    expect(calls.map((c) => c.slot).sort()).toEqual(['m.call#ROOM']);
+    const other = rtcCallsInRoom([
+      LEGACY_IN_CALL,
+      { ...MODERN_IN_CALL, content: { ...MODERN_IN_CALL.content, slot_id: 'm.call#c2' } },
+    ]);
+    expect(other.map((c) => c.slot).sort()).toEqual(['m.call#ROOM', 'm.call#c2']);
+  });
+});
+
+describe('rtcFociFromWellKnown', () => {
+  it('reads the advertised focus', () => {
+    const foci = rtcFociFromWellKnown({
+      'm.homeserver': { base_url: 'https://muromec.nl' },
+      'org.matrix.msc4143.rtc_foci': [
+        { type: 'livekit', livekit_service_url: 'https://livekit.muromec.nl' },
+      ],
+    });
+    expect(foci).toHaveLength(1);
+    expect(foci[0].livekit_service_url).toBe('https://livekit.muromec.nl');
+  });
+
+  it('answers an empty list for a document without foci or not an object', () => {
+    expect(rtcFociFromWellKnown({})).toEqual([]);
+    expect(rtcFociFromWellKnown(undefined)).toEqual([]);
+    expect(rtcFociFromWellKnown('nonsense')).toEqual([]);
+  });
+});
