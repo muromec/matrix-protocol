@@ -10,7 +10,7 @@
 //     immediately on response)
 //   - Deduplication via event_id tracking
 
-import { MatrixClient, MatrixError, type SyncResponse } from './client.ts';
+import { MatrixClient, MatrixError, type MatrixEvent, type SyncResponse } from './client.ts';
 import { MatrixMessage } from './message.ts';
 import { loadSyncToken, saveSyncToken } from './sync-token.ts';
 import { chain } from './data-sources/chain.ts';
@@ -19,6 +19,13 @@ import { BiDiMemorySource } from './data-sources/bi-di-memory.ts';
 import type { DmKey } from './data-sources/bi-di-memory.ts';
 import { mDirectSource } from './data-sources/m-direct.ts';
 import { joinedRoomsSource } from './data-sources/joined-rooms.ts';
+import {
+  isRtcMemberEvent,
+  readRtcMembership,
+  rtcCallsInRoom,
+  type RtcCall,
+  type RtcMembership,
+} from './rtc.ts';
 
 // ── types ──────────────────────────────────────────────────────────────────
 
@@ -34,11 +41,33 @@ export interface WatcherConfig {
 }
 
 export interface WatcherEvent {
-  type: 'connected' | 'disconnected' | 'message' | 'invite' | 'error';
+  type: 'connected' | 'disconnected' | 'message' | 'invite' | 'error' | 'call' | 'ring';
   message?: MatrixMessage;
   roomId?: string;
   inviter?: string;
   error?: Error;
+  call?: CallChange;
+  ring?: RingNotice;
+}
+
+/** What changed about a call, and the call as it stands after the change. */
+export interface CallChange {
+  slot: string;
+  change: 'joined' | 'left' | 'updated';
+  /** The member the change is about. */
+  member: RtcMembership;
+  /** True when that member is this client. */
+  mine: boolean;
+  /** The call after the change. */
+  call: RtcCall;
+}
+
+/** A ring: somebody wants a call with us in this room. */
+export interface RingNotice {
+  /** The slot the ring names, when it names one. */
+  slot?: string;
+  sender: string;
+  lifetimeMs?: number;
 }
 
 // ── watcher ────────────────────────────────────────────────────────────────
@@ -64,6 +93,10 @@ export class MatrixWatcher extends EventTarget {
   #dmMemory: BiDiMemorySource | null = null;
 
   #syncToken: string | undefined;
+
+  /** The latest membership event per room and state key.  A call is room
+   *  state, so what is held is the state, not a stream of deltas. */
+  #rtcState = new Map<string, Map<string, MatrixEvent>>();
 
   constructor(config: WatcherConfig) {
     super();
@@ -166,7 +199,7 @@ export class MatrixWatcher extends EventTarget {
   // ── events ──────────────────────────────────────────────────────────────
 
   on(
-    type: 'message' | 'connected' | 'disconnected' | 'invite' | 'error',
+    type: 'message' | 'connected' | 'disconnected' | 'invite' | 'error' | 'call' | 'ring',
     listener: (event: WatcherEvent) => void,
   ): void {
     this.addEventListener(type, (e) => listener((e as CustomEvent<WatcherEvent>).detail));
@@ -203,14 +236,22 @@ export class MatrixWatcher extends EventTarget {
     }
 
     this.#processAccountData(resp);
+    this.#processToDevice(resp);
 
     if (resp.rooms?.join) {
       for (const [roomId, roomData] of Object.entries(resp.rooms.join)) {
-        const timelineEvents = roomData?.timeline?.events ?? [];
+        // A call is room state: one that is already up arrives in the state
+        // block of the first sync, and every change after that in the timeline.
+        const events = [...(roomData?.state?.events ?? []), ...(roomData?.timeline?.events ?? [])];
 
-        for (const event of timelineEvents) {
+        for (const event of events) {
           if (this.#seenEvents.has(event.event_id)) continue;
           this.#trackSeen(event.event_id);
+
+          if (isRtcMemberEvent(event)) {
+            this.#processMembership(roomId, event);
+            continue;
+          }
 
           if (event.sender === this.#client.userId) continue;
           if (event.type !== 'm.room.message') continue;
@@ -225,6 +266,76 @@ export class MatrixWatcher extends EventTarget {
         }
       }
     }
+  }
+
+  /** A membership event, as a change to the call it belongs to.  The call
+   *  after the change travels with it, so a reader does not have to keep the
+   *  call's state itself. */
+  #processMembership(roomId: string, event: MatrixEvent): void {
+    const membership = readRtcMembership(event);
+    if (!membership) return;
+
+    const byKey = this.#rtcState.get(roomId) ?? new Map<string, MatrixEvent>();
+    const previous = byKey.get(membership.stateKey);
+    byKey.set(membership.stateKey, event);
+    this.#rtcState.set(roomId, byKey);
+
+    const wasInCall = previous ? (readRtcMembership(previous)?.inCall ?? false) : false;
+    let change: CallChange['change'] = 'updated';
+    if (membership.inCall && !wasInCall) change = 'joined';
+    if (!membership.inCall && wasInCall) change = 'left';
+
+    const call = rtcCallsInRoom([...byKey.values()]).find((c) => c.slot === membership.slot) ?? {
+      slot: membership.slot,
+      application: membership.application,
+      callId: membership.callId,
+      members: [],
+      all: [],
+    };
+
+    this.#emit({
+      type: 'call',
+      roomId,
+      call: {
+        slot: membership.slot,
+        change,
+        member: membership,
+        mine: membership.userId === this.#client?.userId,
+        call,
+      },
+    });
+  }
+
+  /** Rings arrive to-device.  A call that is merely announced (a notification
+   *  of `notify` rather than `ring`) is not news here: the call itself arrives
+   *  as a membership. */
+  #processToDevice(resp: SyncResponse): void {
+    for (const event of resp.to_device?.events ?? []) {
+      if (event.type !== 'm.call.notify') continue;
+
+      const content = event.content;
+      if (content['notification_type'] !== 'ring') continue;
+
+      const slot = typeof content['slot_id'] === 'string' ? content['slot_id'] : undefined;
+      const lifetimeMs = typeof content['lifetime'] === 'number' ? content['lifetime'] : undefined;
+      void this.#emitRing(event.sender, slot, lifetimeMs);
+    }
+  }
+
+  /** A ring names no room: it comes from a user, and the room it is about is
+   *  the DM room with that user. */
+  async #emitRing(
+    sender: string,
+    slot: string | undefined,
+    lifetimeMs: number | undefined,
+  ): Promise<void> {
+    let roomId: string | undefined;
+    try {
+      roomId = (await this.#dmCache?.get({ tag: 'mxid', value: sender })) ?? undefined;
+    } catch {
+      roomId = undefined;
+    }
+    this.#emit({ type: 'ring', roomId, ring: { slot, sender, lifetimeMs } });
   }
 
   // ── cache lifecycle ─────────────────────────────────────────────────────

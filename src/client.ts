@@ -20,6 +20,7 @@
 
 import * as https from 'node:https';
 import * as http from 'node:http';
+import { RTC_MEMBER_TYPES } from './rtc.ts';
 
 // ── types ──────────────────────────────────────────────────────────────────
 
@@ -66,13 +67,29 @@ export interface MatrixEvent {
 export interface SyncResponse {
   next_batch: string;
   rooms?: {
-    join?: Record<string, { timeline?: { events: MatrixEvent[] } }>;
+    join?: Record<
+      string,
+      {
+        /** A call that is already up arrives here on the first sync. */
+        state?: { events: MatrixEvent[] };
+        timeline?: { events: MatrixEvent[] };
+      }
+    >;
     invite?: Record<string, { invite_state?: { events: MatrixEvent[] } }>;
     leave?: Record<string, unknown>;
   };
+  /** To-device events: rings arrive here, and they carry no room. */
+  to_device?: { events?: ToDeviceEvent[] };
   account_data?: {
     events?: Array<{ type: string; content: Record<string, unknown> }>;
   };
+}
+
+/** A to-device event as /sync delivers it: no event ID, no room. */
+export interface ToDeviceEvent {
+  type: string;
+  sender: string;
+  content: Record<string, unknown>;
 }
 
 /** POST /login response. */
@@ -227,7 +244,12 @@ export class MatrixClient {
       JSON.stringify({
         presence: { types: [] },
         account_data: { types: ['m.direct'] },
-        room: { timeline: { types: ['m.room.message', 'm.room.member'] } },
+        room: {
+          timeline: { types: ['m.room.message', 'm.room.member', ...RTC_MEMBER_TYPES] },
+          // A call is room state: this is what tells us about one that is
+          // already up when the watcher starts.
+          state: { types: RTC_MEMBER_TYPES },
+        },
       }),
     );
     // Carry our current presence on every sync so the server doesn't

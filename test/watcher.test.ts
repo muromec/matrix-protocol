@@ -346,3 +346,198 @@ describe('sync loop', () => {
     expect(signal).toBeInstanceOf(AbortSignal);
   });
 });
+
+// ── call events ────────────────────────────────────────────────────────────
+
+import { membershipEventFor, leaveEventFor } from '../src/rtc.ts';
+import type { MatrixEvent } from '../src/client.ts';
+import type { WatcherEvent } from '../src/watcher.ts';
+
+const OURS = membershipEventFor({
+  userId: '@butler:muromec.nl',
+  deviceId: 'DEV',
+  roomId: '!r:ex.com',
+  serviceUrl: 'https://sfu.example',
+});
+const OURS_EVENT = {
+  type: OURS.type,
+  state_key: OURS.stateKey,
+  sender: '@butler:muromec.nl',
+  content: { ...OURS.content } as Record<string, unknown>,
+  event_id: '$join-ours',
+  room_id: '!r:ex.com',
+  origin_server_ts: 1,
+} as MatrixEvent;
+
+const OTHER = membershipEventFor({
+  userId: '@alice:ex.com',
+  deviceId: 'AT',
+  roomId: '!r:ex.com',
+  serviceUrl: 'https://sfu.example',
+});
+const OTHER_EVENT = {
+  type: OTHER.type,
+  state_key: OTHER.stateKey,
+  sender: '@alice:ex.com',
+  content: { ...OTHER.content } as Record<string, unknown>,
+  event_id: '$join-alice',
+  room_id: '!r:ex.com',
+  origin_server_ts: 2,
+} as MatrixEvent;
+
+const LEFT_EVENT = {
+  ...OURS_EVENT,
+  content: {},
+  event_id: '$leave-ours',
+  unsigned: { prev_content: { ...OURS.content } as Record<string, unknown> },
+} as MatrixEvent;
+
+/** Boot with a scripted sync stream: each call returns the next response, and
+ *  once the script is spent the loop gets empty syncs. */
+async function bootWithSync(
+  responses: unknown[],
+  setup?: (watcher: MatrixWatcher) => Promise<void>,
+): Promise<{ watcher: MatrixWatcher; events: WatcherEvent[]; stop: () => Promise<void> }> {
+  mockClient = null!;
+
+  const w = new MatrixWatcherCtor(makeConfig({ reconnectDelay: 1 }));
+  const events: WatcherEvent[] = [];
+  w.on('call', (e) => events.push(e));
+  w.on('ring', (e) => events.push(e));
+
+  const startPromise = w.start();
+  // Not the watcher's ready promise: the loop replaces it before resolving, so
+  // a read this early would hold the one it threw away.  The DM cache is what
+  // the tests below need, and it is built during the same boot.
+  const booted = Date.now();
+  while (!w.dmMemory) {
+    if (Date.now() - booted > 2000) throw new Error('bootWithSync: the DM cache was never built');
+    await new Promise((r) => setTimeout(r, 1));
+  }
+
+  if (setup) await setup(w);
+
+  let i = 0;
+  mockClient.sync.mockImplementation(() => tick(responses[i++] ?? { next_batch: 'sN', rooms: {} }));
+
+  await new Promise((r) => setTimeout(r, 30));
+
+  return {
+    watcher: w,
+    events,
+    stop: async () => {
+      w.stop();
+      await startPromise;
+    },
+  };
+}
+
+function joinSync(stateEvents: MatrixEvent[], timelineEvents: MatrixEvent[] = []): unknown {
+  return {
+    next_batch: 's1',
+    rooms: {
+      join: {
+        '!r:ex.com': { state: { events: stateEvents }, timeline: { events: timelineEvents } },
+      },
+    },
+  };
+}
+
+describe('call events', () => {
+  it('reports a call that is already up, in the state block', async () => {
+    const { events, stop } = await bootWithSync([joinSync([OURS_EVENT])]);
+
+    const call = events.find((e) => e.type === 'call')?.call;
+    expect(call?.slot).toBe('m.call#ROOM');
+    expect(call?.change).toBe('joined');
+    expect(call?.mine).toBe(true);
+    expect(call?.member.memberId).toBe('@butler:muromec.nl:DEV');
+    expect(call?.call.members).toHaveLength(1);
+
+    await stop();
+  });
+
+  it('counts the members that are in the call', async () => {
+    const { events, stop } = await bootWithSync([joinSync([OURS_EVENT, OTHER_EVENT])]);
+
+    const calls = events.filter((e) => e.type === 'call');
+    expect(calls).toHaveLength(2);
+    expect(calls[0].call?.mine).toBe(true);
+    expect(calls[1].call?.mine).toBe(false);
+    expect(calls[1].call?.call.members).toHaveLength(2);
+
+    await stop();
+  });
+
+  it('reports a leave, with the call it left', async () => {
+    const { events, stop } = await bootWithSync([
+      joinSync([OURS_EVENT]),
+      joinSync([], [LEFT_EVENT]),
+    ]);
+
+    const calls = events.filter((e) => e.type === 'call');
+    expect(calls.map((e) => e.call?.change)).toEqual(['joined', 'left']);
+    expect(calls[1].call?.call.members).toHaveLength(0);
+
+    await stop();
+  });
+
+  it('emits each changed membership once', async () => {
+    const { events, stop } = await bootWithSync([
+      joinSync([OURS_EVENT, OTHER_EVENT]),
+      joinSync([OURS_EVENT, OTHER_EVENT]),
+    ]);
+
+    expect(events.filter((e) => e.type === 'call')).toHaveLength(2);
+
+    await stop();
+  });
+
+  it('turns a ring into a room: the DM with the user who rang', async () => {
+    const ringSync = {
+      next_batch: 's1',
+      to_device: {
+        events: [
+          {
+            type: 'm.call.notify',
+            sender: '@alice:ex.com',
+            content: { notification_type: 'ring', slot_id: 'm.call#ROOM', lifetime: 30_000 },
+          },
+        ],
+      },
+    };
+
+    const { events, stop } = await bootWithSync([ringSync], async (watcher) => {
+      await seedDm(watcher, '!dm-alice:ex.com', '@alice:ex.com');
+    });
+
+    const ring = events.find((e) => e.type === 'ring');
+    expect(ring?.roomId).toBe('!dm-alice:ex.com');
+    expect(ring?.ring?.sender).toBe('@alice:ex.com');
+    expect(ring?.ring?.slot).toBe('m.call#ROOM');
+    expect(ring?.ring?.lifetimeMs).toBe(30_000);
+
+    await stop();
+  });
+
+  it('ignores a call that is announced without ringing', async () => {
+    const notifySync = {
+      next_batch: 's1',
+      to_device: {
+        events: [
+          {
+            type: 'm.call.notify',
+            sender: '@alice:ex.com',
+            content: { notification_type: 'notify', slot_id: 'm.call#ROOM' },
+          },
+        ],
+      },
+    };
+
+    const { events, stop } = await bootWithSync([notifySync]);
+
+    expect(events.filter((e) => e.type === 'ring')).toHaveLength(0);
+
+    await stop();
+  });
+});
