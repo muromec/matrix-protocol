@@ -132,6 +132,12 @@ export interface LivekitToken {
   expiresAtSec?: number;
 }
 
+/** The two token dialects in the wild.  They differ in the identity the token
+ *  carries, which a participant can only bind if it can derive the same string:
+ *  the older `/sfu/get` writes `@user:server:device`, the current `/get_token`
+ *  writes a hash of the member. */
+export type RtcTokenDialect = 'legacy' | 'modern';
+
 // ── error ──────────────────────────────────────────────────────────────────
 
 export class MatrixError extends Error {
@@ -573,37 +579,42 @@ export class MatrixClient {
   /**
    * Obtain a LiveKit join token for a call from the focus that carries it.
    *
-   * Dialect: `POST /get_token` with an OpenID token, which is what the service
-   * deployed for this homeserver speaks.  No bearer is sent — the OpenID token
-   * is the credential, and our access token is not carried to the focus's host.
+   * Two dialects are in the wild and they differ in the identity the JWT
+   * carries, which a participant can only bind if it can derive the same
+   * string: the older `/sfu/get` writes `@user:server:device`, the current
+   * `/get_token` writes a hash of the member.  A caller that says nothing gets
+   * the current one; `rtcTokenDialectInRoom` answers for a room.
    *
-   * The response names the SFU's WebSocket address; the JWT's expiry is read,
-   * never verified, so a caller can tell when the credential needs replacing.
+   * No bearer is sent — the OpenID token is the credential, and our access token
+   * is not carried to the focus's host.
    */
   async getLivekitToken(opts: {
     serviceUrl: string;
     roomId: string;
     slot: string;
     memberId: string;
+    /** Which dialect to ask in, for a caller that knows the room's. */
+    dialect?: RtcTokenDialect;
   }): Promise<LivekitToken> {
     const openId = await this.openIdToken();
-    const url = `${opts.serviceUrl.replace(/\/+$/, '')}/get_token`;
-    const resp = (await request(
-      'POST',
-      url,
-      {
-        room_id: opts.roomId,
-        slot_id: opts.slot,
-        openid_token: openId,
-        member: {
-          id: opts.memberId,
-          claimed_user_id: this.#userId,
-          claimed_device_id: this.#deviceId,
-        },
-      },
-      undefined,
-      this.#requestTimeout,
-    )) as { url: string; jwt: string };
+    const legacy = opts.dialect === 'legacy';
+    const url = `${opts.serviceUrl.replace(/\/+$/, '')}/${legacy ? 'sfu/get' : 'get_token'}`;
+    const body = legacy
+      ? { room: opts.roomId, openid_token: openId, device_id: this.#deviceId }
+      : {
+          room_id: opts.roomId,
+          slot_id: opts.slot,
+          openid_token: openId,
+          member: {
+            id: opts.memberId,
+            claimed_user_id: this.#userId,
+            claimed_device_id: this.#deviceId,
+          },
+        };
+    const resp = (await request('POST', url, body, undefined, this.#requestTimeout)) as {
+      url: string;
+      jwt: string;
+    };
 
     return { url: resp.url, jwt: resp.jwt, expiresAtSec: jwtExpiry(resp.jwt) };
   }

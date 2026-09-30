@@ -6,6 +6,7 @@ export {
   type SendResponse,
   type LoginResponse,
   type CreateRoomRequest,
+  type RtcTokenDialect,
   MatrixError,
 } from './client.ts';
 export { MatrixMessage, type MatrixMessageHeaders, type OutgoingMatrixMessage } from './message.ts';
@@ -18,6 +19,7 @@ export {
   readRtcMembership,
   rtcCallsInRoom,
   rtcFociFromWellKnown,
+  rtcTokenDialectInRoom,
   type RtcFocus,
   type RtcMemberRef,
   type RtcMembershipContent,

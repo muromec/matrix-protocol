@@ -9,6 +9,7 @@ import {
   readRtcMembership,
   rtcCallsInRoom,
   rtcFociFromWellKnown,
+  rtcTokenDialectInRoom,
   slotOf,
 } from '../src/rtc.ts';
 
@@ -261,5 +262,22 @@ describe('membershipEventFor', () => {
     expect(membershipEventTypeFor([])).toBe('org.matrix.msc3401.call.member');
     expect(membershipEventTypeFor([LEGACY_IN_CALL])).toBe('org.matrix.msc3401.call.member');
     expect(membershipEventTypeFor([LEGACY_IN_CALL, MODERN_IN_CALL])).toBe('m.rtc.member');
+  });
+});
+
+describe('rtcTokenDialectInRoom', () => {
+  it('answers for the generation the room is in', () => {
+    expect(rtcTokenDialectInRoom([MODERN_IN_CALL])).toBe('modern');
+    expect(rtcTokenDialectInRoom([LEGACY_IN_CALL])).toBe('legacy');
+  });
+
+  it('lets a newer participant outrank an older one', () => {
+    expect(rtcTokenDialectInRoom([LEGACY_IN_CALL, MODERN_IN_CALL])).toBe('modern');
+  });
+
+  it('answers the older dialect when nobody is in the call', () => {
+    expect(rtcTokenDialectInRoom([])).toBe('legacy');
+    expect(rtcTokenDialectInRoom([LEGACY_LEFT])).toBe('legacy');
+    expect(rtcTokenDialectInRoom([A_MESSAGE])).toBe('legacy');
   });
 });

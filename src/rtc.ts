@@ -12,7 +12,7 @@
 // in where the slot and the member block live, and reconciling that is the
 // whole of what this module does.  Nothing here talks to a server.
 
-import type { MatrixEvent } from './client.ts';
+import type { MatrixEvent, RtcTokenDialect } from './client.ts';
 
 /** The membership event types three generations of clients write. */
 export const RTC_MEMBER_TYPES: string[] = [
@@ -208,6 +208,26 @@ export function membershipEventTypeFor(events: MatrixEvent[]): string {
     if (events.some((e) => e.type === type)) return type;
   }
   return RTC_MEMBER_TYPES[0];
+}
+
+/** The membership type that carries a member block, and with it an identity that
+ *  has to be hashed.  The two older ones name the device outright. */
+const MODERN_MEMBER_TYPE = 'm.rtc.member';
+
+/**
+ * The token dialect the call in this room speaks.
+ *
+ * The identity in the token is what the others in the room see us as, and a
+ * client can only bind a participant whose identity it can derive, so we ask the
+ * way the room asks: the newest generation with somebody in the call, and the
+ * older one when there is nobody yet, because the clients in the wild are old.
+ */
+export function rtcTokenDialectInRoom(events: MatrixEvent[]): RtcTokenDialect {
+  for (const type of [...RTC_MEMBER_TYPES].reverse()) {
+    const inCall = events.some((e) => e.type === type && readRtcMembership(e)?.inCall === true);
+    if (inCall) return type === MODERN_MEMBER_TYPE ? 'modern' : 'legacy';
+  }
+  return 'legacy';
 }
 
 /** The state key a legacy membership lives under: `_{user}_{device}_{call id}`,

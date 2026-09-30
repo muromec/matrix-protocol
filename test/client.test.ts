@@ -774,4 +774,35 @@ describe('MatrixRTC token exchange', () => {
     expect(body.member.claimed_device_id).toBe('DEVICE_1');
     expect(body.openid_token.matrix_server_name).toBe('hs.example');
   });
+  it('asks the older dialect as /sfu/get, with the device claimed', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, openIdBody);
+    srv.enqueue(200, { url: 'wss://sfu.example', jwt: 'header.payload.signature' });
+
+    const token = await client.getLivekitToken({
+      serviceUrl: baseUrl(srv),
+      roomId: '!r:hs',
+      slot: 'm.call#ROOM',
+      memberId: '@bot:matrix.org:DEVICE_1',
+      dialect: 'legacy',
+    });
+
+    expect(token.url).toBe('wss://sfu.example');
+    expect(srv.lastRequest?.method).toBe('POST');
+    expect(srv.lastRequest?.path).toBe('/sfu/get');
+
+    const body = JSON.parse(srv.lastRequest?.body ?? '{}') as {
+      room: string;
+      device_id: string;
+      room_id?: string;
+      slot_id?: string;
+      openid_token: { matrix_server_name: string };
+    };
+    expect(body.room).toBe('!r:hs');
+    expect(body.device_id).toBe('DEVICE_1');
+    expect(body.room_id).toBeUndefined();
+    expect(body.slot_id).toBeUndefined();
+    expect(body.openid_token.matrix_server_name).toBe('hs.example');
+  });
 });
