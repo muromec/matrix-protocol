@@ -30,6 +30,8 @@ class MockMatrixServer {
   #server: Server;
   #queue: CannedResponse[] = [];
   #lastRequest: LastRequest = null;
+  /** When set, requests are accepted and never answered. */
+  #silent = false;
 
   port!: number;
   readonly listening: Promise<number>;
@@ -45,6 +47,9 @@ class MockMatrixServer {
           path: req.url ?? '/',
           body,
         };
+
+        // A silent server takes the request and never answers it.
+        if (this.#silent) return;
 
         // Pop the oldest queued response, or default to 200 {}.
         const canned = this.#queue.shift() ?? { status: 200, body: {} };
@@ -72,6 +77,11 @@ class MockMatrixServer {
   /** Returns the last request received (method, path, body). */
   get lastRequest(): LastRequest {
     return this.#lastRequest;
+  }
+
+  /** Accept requests and never answer them — for the timeout test. */
+  silent(): void {
+    this.#silent = true;
   }
 
   /** Shut down the server. */
@@ -612,10 +622,16 @@ describe('connection errors', () => {
   });
 
   it('throws MatrixError with M_REQUEST_TIMEOUT on timeout', async () => {
+    // A server that takes the request and answers nothing: the client's own
+    // timeout is the only way out.  Loopback only — this used to aim at
+    // 192.0.2.1 and depend on the network rather than on the client.
+    const srv = await newServer();
+    srv.silent();
+
     let err: unknown;
     try {
       await MatrixClient.login({
-        baseUrl: 'http://192.0.2.1:80',
+        baseUrl: baseUrl(srv),
         userId: '@bot:matrix.org',
         password: 'secret',
         requestTimeout: 500,
