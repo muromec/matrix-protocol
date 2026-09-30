@@ -292,3 +292,62 @@ export function membershipEventFor(opts: {
 export function leaveEventFor(membership: RtcMembershipEvent): RtcMembershipEvent {
   return { type: membership.type, stateKey: membership.stateKey, content: {} };
 }
+
+/** The event type clients read as a call notification.  Two names are in the wild, the older
+ *  `org.matrix.msc4075.call.notify` and this one; this is what the current clients send. */
+export const RTC_NOTIFICATION_TYPE = 'org.matrix.msc4075.rtc.notification';
+
+/** Two minutes: the ceiling a notification's `lifetime` is held to. */
+export const RTC_NOTIFICATION_MAX_LIFETIME_MS = 2 * 60 * 1000;
+
+/** An incoming call, as the room's timeline carries it.
+ *
+ *  A membership says somebody is in a call; this is the event that points at them and asks a client to
+ *  raise the call.  `m.relates_to` names the membership rather than repeating it, so a client that has
+ *  not read the room's state can still resolve the call out of the ring alone. */
+export interface RtcNotificationContent {
+  slot_id: string;
+  'm.mentions': { user_ids: string[]; room?: boolean };
+  notification_type: 'ring' | 'notification';
+  'm.relates_to': { event_id: string; rel_type: string };
+  sender_ts: number;
+  lifetime: number;
+  msc4354_sticky_key?: string;
+  'm.call.intent'?: string;
+}
+
+/** The notification as it is written: what to send, and as which event type. */
+export interface RtcNotificationEvent {
+  type: string;
+  content: RtcNotificationContent;
+}
+
+/**
+ * The ring that makes a call a client raises.
+ *
+ * An empty `user_ids` with `room` true is the room-wide ring the reference client sends when it does not
+ * know who should be reached, and it is what this side sends: which person answers is not this layer's
+ * business.  `lifetime` is capped rather than refused, because the cap belongs to the protocol and a
+ * caller asking for longer has still asked for a ring.
+ */
+export function notificationEventFor(opts: {
+  slot: string;
+  membershipEventId: string;
+  userIds?: string[];
+  room?: boolean;
+  intent?: string;
+  lifetimeMs?: number;
+  senderTs?: number;
+}): RtcNotificationEvent {
+  const content: RtcNotificationContent = {
+    slot_id: opts.slot,
+    'm.mentions': { user_ids: opts.userIds ?? [], room: opts.room ?? true },
+    notification_type: 'ring',
+    'm.relates_to': { event_id: opts.membershipEventId, rel_type: 'm.reference' },
+    sender_ts: opts.senderTs ?? Date.now(),
+    lifetime: Math.min(opts.lifetimeMs ?? 90_000, RTC_NOTIFICATION_MAX_LIFETIME_MS),
+    msc4354_sticky_key: opts.slot,
+  };
+  if (opts.intent) content['m.call.intent'] = opts.intent;
+  return { type: RTC_NOTIFICATION_TYPE, content };
+}

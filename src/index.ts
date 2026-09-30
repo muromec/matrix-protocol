@@ -31,5 +31,10 @@ export {
   leaveEventFor,
   membershipEventTypeFor,
   legacyStateKey,
+  notificationEventFor,
+  RTC_NOTIFICATION_TYPE,
+  RTC_NOTIFICATION_MAX_LIFETIME_MS,
   type RtcMembershipEvent,
+  type RtcNotificationContent,
+  type RtcNotificationEvent,
 } from './rtc.ts';

@@ -6,6 +6,9 @@ import {
   legacyStateKey,
   membershipEventFor,
   membershipEventTypeFor,
+  notificationEventFor,
+  RTC_NOTIFICATION_MAX_LIFETIME_MS,
+  RTC_NOTIFICATION_TYPE,
   readRtcMembership,
   rtcCallsInRoom,
   rtcFociFromWellKnown,
@@ -279,5 +282,43 @@ describe('rtcTokenDialectInRoom', () => {
     expect(rtcTokenDialectInRoom([])).toBe('legacy');
     expect(rtcTokenDialectInRoom([LEGACY_LEFT])).toBe('legacy');
     expect(rtcTokenDialectInRoom([A_MESSAGE])).toBe('legacy');
+  });
+});
+
+describe('notificationEventFor', () => {
+  it('writes the ring a client raises a call from', () => {
+    const event = notificationEventFor({
+      slot: 'm.call#ROOM',
+      membershipEventId: '$membership',
+      senderTs: 1790776225000,
+    });
+
+    expect(event.type).toBe(RTC_NOTIFICATION_TYPE);
+    expect(event.content.slot_id).toBe('m.call#ROOM');
+    expect(event.content.notification_type).toBe('ring');
+    expect(event.content['m.relates_to']).toEqual({
+      event_id: '$membership',
+      rel_type: 'm.reference',
+    });
+    expect(event.content['m.mentions']).toEqual({ user_ids: [], room: true });
+    expect(event.content.sender_ts).toBe(1790776225000);
+    expect(event.content.lifetime).toBe(90_000);
+    expect(event.content.msc4354_sticky_key).toBe('m.call#ROOM');
+  });
+
+  it('caps a lifetime rather than refusing it, and names who it is for when told', () => {
+    const event = notificationEventFor({
+      slot: 'm.call#ROOM',
+      membershipEventId: '$membership',
+      lifetimeMs: 10 * 60 * 1000,
+      intent: 'audio',
+      userIds: ['@them:example.org'],
+      room: false,
+      senderTs: 1,
+    });
+
+    expect(event.content.lifetime).toBe(RTC_NOTIFICATION_MAX_LIFETIME_MS);
+    expect(event.content['m.call.intent']).toBe('audio');
+    expect(event.content['m.mentions']).toEqual({ user_ids: ['@them:example.org'], room: false });
   });
 });
