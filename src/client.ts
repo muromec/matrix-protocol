@@ -96,6 +96,25 @@ export interface CreateRoomRequest {
   name?: string;
 }
 
+/** POST /openid/request_token response: the credential a focus accepts in the
+ *  older dialect, verified against the homeserver rather than by us. */
+export interface OpenIdToken {
+  access_token: string;
+  token_type: string;
+  matrix_server_name: string;
+  expires_in: number;
+}
+
+/** What a focus's token service answers. */
+export interface LivekitToken {
+  /** The SFU's WebSocket address. */
+  url: string;
+  /** The participant JWT. */
+  jwt: string;
+  /** The JWT's `exp` claim, seconds since the epoch, when it has one. */
+  expiresAtSec?: number;
+}
+
 // ── error ──────────────────────────────────────────────────────────────────
 
 export class MatrixError extends Error {
@@ -120,17 +139,20 @@ export class MatrixClient {
   #requestTimeout: number;
   #txnCounter: number;
   #userId: string;
+  #deviceId: string;
   #currentPresence: string;
 
   private constructor(
     baseUrl: string,
     accessToken: string,
     userId: string,
+    deviceId: string,
     requestTimeout: number,
   ) {
     this.#baseUrl = baseUrl.replace(/\/+$/, ''); // strip trailing slashes
     this.#accessToken = accessToken;
     this.#userId = userId;
+    this.#deviceId = deviceId;
     this.#requestTimeout = requestTimeout;
     this.#txnCounter = 0;
     this.#currentPresence = 'online';
@@ -164,13 +186,18 @@ export class MatrixClient {
       timeout,
     )) as LoginResponse;
 
-    return new MatrixClient(baseUrl, resp.access_token, resp.user_id, timeout);
+    return new MatrixClient(baseUrl, resp.access_token, resp.user_id, resp.device_id, timeout);
   }
 
   // ── accessors ──────────────────────────────────────────────────────────
 
   get userId(): string {
     return this.#userId;
+  }
+
+  /** The device ID the login was given — what an RTC membership names. */
+  get deviceId(): string {
+    return this.#deviceId;
   }
 
   get baseUrl(): string {
@@ -467,6 +494,97 @@ export class MatrixClient {
     )) as { joined: Record<string, { display_name?: string; avatar_url?: string }> };
     return resp.joined;
   }
+  // ── room state ────────────────────────────────────────────────────────────
+
+  /**
+   * The room's current state: every state event, of every type.
+   *
+   * A call lives in state rather than in a timeline (see `rtc.ts`), so a client
+   * that wants to know whether a call is up reads it here instead of waiting
+   * for a change to arrive through a sync.
+   */
+  async getRoomState(roomId: string): Promise<MatrixEvent[]> {
+    const url = `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/state`;
+    return (await request(
+      'GET',
+      url,
+      undefined,
+      this.#accessToken,
+      this.#requestTimeout,
+    )) as MatrixEvent[];
+  }
+
+  /**
+   * Write a room state event.  An empty `stateKey` is the type's default key.
+   * Returns the event ID.
+   */
+  async sendStateEvent(
+    roomId: string,
+    type: string,
+    stateKey: string,
+    content: Record<string, unknown>,
+  ): Promise<string> {
+    const url =
+      `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}` +
+      `/state/${encodeURIComponent(type)}/${encodeURIComponent(stateKey)}`;
+    const resp = (await request(
+      'PUT',
+      url,
+      content,
+      this.#accessToken,
+      this.#requestTimeout,
+    )) as SendResponse;
+    return resp.event_id;
+  }
+
+  // ── MatrixRTC ─────────────────────────────────────────────────────────────
+
+  /**
+   * Ask the homeserver for an OpenID token for this session — the credential a
+   * focus's token service accepts in the older dialect.
+   */
+  async openIdToken(): Promise<OpenIdToken> {
+    const url = `${this.#baseUrl}/_matrix/client/v3/user/${encodeURIComponent(this.#userId)}/openid/request_token`;
+    return (await request('POST', url, {}, this.#accessToken, this.#requestTimeout)) as OpenIdToken;
+  }
+
+  /**
+   * Obtain a LiveKit join token for a call from the focus that carries it.
+   *
+   * Dialect: `POST /get_token` with an OpenID token, which is what the service
+   * deployed for this homeserver speaks.  No bearer is sent — the OpenID token
+   * is the credential, and our access token is not carried to the focus's host.
+   *
+   * The response names the SFU's WebSocket address; the JWT's expiry is read,
+   * never verified, so a caller can tell when the credential needs replacing.
+   */
+  async getLivekitToken(opts: {
+    serviceUrl: string;
+    roomId: string;
+    slot: string;
+    memberId: string;
+  }): Promise<LivekitToken> {
+    const openId = await this.openIdToken();
+    const url = `${opts.serviceUrl.replace(/\/+$/, '')}/get_token`;
+    const resp = (await request(
+      'POST',
+      url,
+      {
+        room_id: opts.roomId,
+        slot_id: opts.slot,
+        openid_token: openId,
+        member: {
+          id: opts.memberId,
+          claimed_user_id: this.#userId,
+          claimed_device_id: this.#deviceId,
+        },
+      },
+      undefined,
+      this.#requestTimeout,
+    )) as { url: string; jwt: string };
+
+    return { url: resp.url, jwt: resp.jwt, expiresAtSec: jwtExpiry(resp.jwt) };
+  }
 }
 
 // ── HTTP helpers ───────────────────────────────────────────────────────────
@@ -475,6 +593,27 @@ function makeBody(method: string, body: unknown): string {
   // Serialize body to JSON string. GET requests have no body.
   if (method === 'GET' || body === undefined) return '';
   return JSON.stringify(body);
+}
+
+// ── JWT ────────────────────────────────────────────────────────────────────
+
+/**
+ * A JWT's `exp` claim, in seconds since the epoch, or undefined.
+ *
+ * Read, never verified: the signature belongs to the service that issued it,
+ * and what a caller wants here is only when the credential stops working.
+ */
+function jwtExpiry(jwt: string): number | undefined {
+  const payload = jwt.split('.')[1];
+  if (!payload) return undefined;
+  try {
+    const claims = JSON.parse(Buffer.from(payload, 'base64url').toString('utf-8')) as {
+      exp?: number;
+    };
+    return typeof claims.exp === 'number' ? claims.exp : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function makeHeaders(token: string | undefined, bodyStr: string): Record<string, string> {

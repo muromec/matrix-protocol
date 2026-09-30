@@ -192,3 +192,83 @@ export function rtcFociFromWellKnown(document: unknown): RtcFocus[] {
   const foci = (document as Record<string, unknown>)['org.matrix.msc4143.rtc_foci'];
   return Array.isArray(foci) ? (foci as RtcFocus[]) : [];
 }
+
+/** A membership event as it is written: what to PUT, and where. */
+export interface RtcMembershipEvent {
+  type: string;
+  stateKey: string;
+  content: RtcMembershipContent;
+}
+
+/** The event type to write for a call in this room: the generation the room
+ *  already uses, so that the clients already in the call can read us.  The
+ *  oldest one is the fallback because it is what the clients here write. */
+export function membershipEventTypeFor(events: MatrixEvent[]): string {
+  for (const type of [...RTC_MEMBER_TYPES].reverse()) {
+    if (events.some((e) => e.type === type)) return type;
+  }
+  return RTC_MEMBER_TYPES[0];
+}
+
+/** The state key a legacy membership lives under: `_{user}_{device}_{call id}`,
+ *  with the application standing in for a call that has no id. */
+export function legacyStateKey(userId: string, deviceId: string, callId?: string): string {
+  return `_${userId}_${deviceId}_${callId && callId.length > 0 ? callId : 'm.call'}`;
+}
+
+/**
+ * The membership to publish in order to be in a call.
+ *
+ * Shape: the unstable MSC3401 one, which is what the clients here speak — the
+ * current `m.rtc.member` shape differs in where the slot and the member block
+ * live and in what `expires` means, and nothing here has seen one of those yet.
+ *
+ * `expiresMs` is a *duration* in this shape (a client renews before it runs
+ * out); four hours is what the clients use by default.
+ */
+export function membershipEventFor(opts: {
+  userId: string;
+  deviceId: string;
+  roomId: string;
+  serviceUrl: string;
+  type?: string;
+  application?: string;
+  callId?: string;
+  intent?: string;
+  expiresMs?: number;
+}): RtcMembershipEvent {
+  const application = opts.application ?? 'm.call';
+  const callId = opts.callId ?? '';
+  const expiresMs = opts.expiresMs ?? 4 * 60 * 60 * 1000;
+
+  return {
+    type: opts.type ?? RTC_MEMBER_TYPES[0],
+    stateKey: legacyStateKey(opts.userId, opts.deviceId, callId),
+    content: {
+      application,
+      call_id: callId,
+      device_id: opts.deviceId,
+      expires: expiresMs,
+      // The old shape's `livekit_alias` carries the Matrix room ID; the SFU's
+      // room name is the focus's own hash of (room, slot).
+      foci_preferred: [
+        {
+          type: 'livekit',
+          livekit_service_url: opts.serviceUrl,
+          livekit_alias: opts.roomId,
+        },
+      ],
+      focus_active: { type: 'livekit', focus_selection: 'multi_sfu' },
+      'm.call.intent': opts.intent ?? 'audio',
+      membershipID: `${opts.userId}:${opts.deviceId}`,
+      scope: 'm.room',
+    },
+  };
+}
+
+/** The leave: the same event, emptied.  A member that is not in the call has a
+ *  membership whose content is `{}` — the way out is an empty event, not a
+ *  removed one. */
+export function leaveEventFor(membership: RtcMembershipEvent): RtcMembershipEvent {
+  return { type: membership.type, stateKey: membership.stateKey, content: {} };
+}

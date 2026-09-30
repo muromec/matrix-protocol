@@ -2,6 +2,10 @@ import { describe, it, expect } from 'vitest';
 import type { MatrixEvent } from '../src/client.ts';
 import {
   isRtcMemberEvent,
+  leaveEventFor,
+  legacyStateKey,
+  membershipEventFor,
+  membershipEventTypeFor,
   readRtcMembership,
   rtcCallsInRoom,
   rtcFociFromWellKnown,
@@ -189,5 +193,73 @@ describe('rtcFociFromWellKnown', () => {
     expect(rtcFociFromWellKnown({})).toEqual([]);
     expect(rtcFociFromWellKnown(undefined)).toEqual([]);
     expect(rtcFociFromWellKnown('nonsense')).toEqual([]);
+  });
+});
+
+describe('membershipEventFor', () => {
+  const opts = {
+    userId: '@bot:hs',
+    deviceId: 'DEV',
+    roomId: '!r:hs',
+    serviceUrl: 'https://sfu.example',
+  };
+
+  it('writes the membership a client in the wild reads', () => {
+    const ev = membershipEventFor(opts);
+    expect(ev.type).toBe('org.matrix.msc3401.call.member');
+    expect(ev.stateKey).toBe('_@bot:hs_DEV_m.call');
+    expect(ev.content.application).toBe('m.call');
+    expect(ev.content.call_id).toBe('');
+    expect(ev.content.device_id).toBe('DEV');
+    expect(ev.content.expires).toBe(4 * 60 * 60 * 1000);
+    expect(ev.content.membershipID).toBe('@bot:hs:DEV');
+    expect(ev.content['m.call.intent']).toBe('audio');
+    expect(ev.content.scope).toBe('m.room');
+    expect(ev.content.foci_preferred?.[0]).toEqual({
+      type: 'livekit',
+      livekit_service_url: 'https://sfu.example',
+      livekit_alias: '!r:hs',
+    });
+  });
+
+  it('names the call in the state key when it has one', () => {
+    expect(legacyStateKey('@bot:hs', 'DEV', 'c1')).toBe('_@bot:hs_DEV_c1');
+    expect(legacyStateKey('@bot:hs', 'DEV')).toBe('_@bot:hs_DEV_m.call');
+  });
+
+  it('reads back as a member in the call, and as gone once emptied', () => {
+    const ev = membershipEventFor(opts);
+    const asEvent: MatrixEvent = {
+      type: ev.type,
+      state_key: ev.stateKey,
+      sender: opts.userId,
+      content: { ...ev.content } as Record<string, unknown>,
+      event_id: '$ours',
+      room_id: opts.roomId,
+      origin_server_ts: 1,
+    };
+
+    const mine = readRtcMembership(asEvent)!;
+    expect(mine.inCall).toBe(true);
+    expect(mine.slot).toBe('m.call#ROOM');
+    expect(mine.memberId).toBe('@bot:hs:DEV');
+
+    const left = leaveEventFor(ev);
+    expect(left.type).toBe(ev.type);
+    expect(left.stateKey).toBe(ev.stateKey);
+    expect(left.content).toEqual({});
+
+    const asLeft: MatrixEvent = {
+      ...asEvent,
+      content: {},
+      unsigned: { prev_content: { ...ev.content } as Record<string, unknown> },
+    };
+    expect(readRtcMembership(asLeft)!.inCall).toBe(false);
+  });
+
+  it('prefers the type the room already uses', () => {
+    expect(membershipEventTypeFor([])).toBe('org.matrix.msc3401.call.member');
+    expect(membershipEventTypeFor([LEGACY_IN_CALL])).toBe('org.matrix.msc3401.call.member');
+    expect(membershipEventTypeFor([LEGACY_IN_CALL, MODERN_IN_CALL])).toBe('m.rtc.member');
   });
 });

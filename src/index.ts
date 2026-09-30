@@ -24,3 +24,10 @@ export {
   type RtcMembership,
   type RtcCall,
 } from './rtc.ts';
+export {
+  membershipEventFor,
+  leaveEventFor,
+  membershipEventTypeFor,
+  legacyStateKey,
+  type RtcMembershipEvent,
+} from './rtc.ts';

@@ -21,7 +21,7 @@ import { createServer, type Server } from 'node:http';
 
 interface CannedResponse {
   status: number;
-  body: Record<string, unknown>;
+  body: unknown;
 }
 
 type LastRequest = { method: string; path: string; body: string } | null;
@@ -70,7 +70,7 @@ class MockMatrixServer {
   }
 
   /** Enqueue a response for a future request.  FIFO order. */
-  enqueue(status: number, body: Record<string, unknown>): void {
+  enqueue(status: number, body: unknown): void {
     this.#queue.push({ status, body });
   }
 
@@ -681,5 +681,97 @@ describe('sendTyping', () => {
 
     srv.enqueue(500, { errcode: 'M_UNKNOWN', error: 'boom' });
     await expect(client.sendTyping('!room1:matrix.org', true)).rejects.toThrow(MatrixError);
+  });
+});
+
+// ── MatrixRTC client surface ─────────────────────────────────────────────────
+
+describe('room state', () => {
+  it('reads the room state', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, [{ type: 'm.room.create', state_key: '', content: {} }]);
+
+    const state = await client.getRoomState('!r:hs');
+
+    expect(state).toHaveLength(1);
+    expect(srv.lastRequest?.method).toBe('GET');
+    expect(srv.lastRequest?.path).toContain('/rooms/!r%3Ahs/state');
+  });
+
+  it('writes a state event at the type and key it is given', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, { event_id: '$state' });
+
+    const id = await client.sendStateEvent('!r:hs', 'm.rtc.member', '_@bot:matrix.org_DEV_m.call', {
+      application: 'm.call',
+    });
+
+    expect(id).toBe('$state');
+    expect(srv.lastRequest?.method).toBe('PUT');
+    expect(srv.lastRequest?.path).toContain(
+      '/rooms/!r%3Ahs/state/m.rtc.member/_%40bot%3Amatrix.org_DEV_m.call',
+    );
+    expect(JSON.parse(srv.lastRequest?.body ?? '{}')).toEqual({ application: 'm.call' });
+  });
+});
+
+describe('MatrixRTC token exchange', () => {
+  const openIdBody = {
+    access_token: 'openid-token',
+    token_type: 'Bearer',
+    matrix_server_name: 'hs.example',
+    expires_in: 3600,
+  };
+
+  it('asks the homeserver for an OpenID token for this session', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, openIdBody);
+
+    const token = await client.openIdToken();
+
+    expect(token.matrix_server_name).toBe('hs.example');
+    expect(srv.lastRequest?.method).toBe('POST');
+    expect(srv.lastRequest?.path).toContain('/user/%40bot%3Amatrix.org/openid/request_token');
+  });
+
+  it('exchanges it for a LiveKit JWT and reads the expiry', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    const exp = 1790776225;
+    const payload = Buffer.from(JSON.stringify({ exp, sub: '@bot:matrix.org:DEVICE_1' })).toString(
+      'base64url',
+    );
+    const jwt = `header.${payload}.signature`;
+
+    srv.enqueue(200, openIdBody);
+    srv.enqueue(200, { url: 'wss://sfu.example', jwt });
+
+    const token = await client.getLivekitToken({
+      serviceUrl: baseUrl(srv),
+      roomId: '!r:hs',
+      slot: 'm.call#ROOM',
+      memberId: '@bot:matrix.org:DEVICE_1',
+    });
+
+    expect(token.url).toBe('wss://sfu.example');
+    expect(token.expiresAtSec).toBe(exp);
+    expect(srv.lastRequest?.method).toBe('POST');
+    expect(srv.lastRequest?.path).toBe('/get_token');
+
+    const body = JSON.parse(srv.lastRequest?.body ?? '{}') as {
+      room_id: string;
+      slot_id: string;
+      member: { id: string; claimed_user_id: string; claimed_device_id: string };
+      openid_token: { matrix_server_name: string };
+    };
+    expect(body.room_id).toBe('!r:hs');
+    expect(body.slot_id).toBe('m.call#ROOM');
+    expect(body.member.id).toBe('@bot:matrix.org:DEVICE_1');
+    expect(body.member.claimed_user_id).toBe('@bot:matrix.org');
+    expect(body.member.claimed_device_id).toBe('DEVICE_1');
+    expect(body.openid_token.matrix_server_name).toBe('hs.example');
   });
 });
