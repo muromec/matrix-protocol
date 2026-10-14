@@ -543,6 +543,26 @@ export class MatrixClient {
   }
 
   /**
+   * Fetch the bytes behind an `mxc://` URL.
+   *
+   * The authenticated media endpoint (MSC3916).  Measured on this homeserver 2026-10-13: it
+   * answers 401 there without a token, and 404 on the legacy `/_matrix/media/v3/download` path,
+   * so there is one path to take rather than a fallback to keep.
+   *
+   * The bytes are the far side's: a file past the cap is refused rather than pulled into memory.
+   */
+  async downloadMedia(mxcUrl: string): Promise<Uint8Array> {
+    const parsed = /^mxc:\/\/([^/]+)\/(.+)$/.exec(mxcUrl);
+    if (!parsed) throw new Error(`downloadMedia: not an mxc url: ${mxcUrl}`);
+
+    const url =
+      `${this.#baseUrl}/_matrix/client/v1/media/download/` +
+      `${encodeURIComponent(parsed[1])}/${encodeURIComponent(parsed[2])}`;
+
+    return requestBytes(url, this.#accessToken, this.#requestTimeout);
+  }
+
+  /**
    * Write a room state event.  An empty `stateKey` is the type's default key.
    * Returns the event ID.
    */
@@ -746,6 +766,93 @@ async function request<T>(
     }
 
     if (bodyStr.length > 0) req.write(bodyStr);
+    req.end();
+  });
+}
+
+/** What this client will hold in memory for one media download. */
+const MAX_MEDIA_BYTES = 32 * 1024 * 1024;
+
+/**
+ * GET a URL and answer with the body's bytes.
+ *
+ * The `request` helper above cannot carry this: a media download is not JSON, and its size is the
+ * far side's.  The cap is a safety bound rather than a policy — what counts as too big to hand
+ * over is decided where the file is shown.
+ */
+async function requestBytes(
+  urlString: string,
+  token: string | undefined,
+  timeoutMs: number,
+): Promise<Uint8Array> {
+  const url = new URL(urlString);
+  const isHttps = url.protocol === 'https:';
+  const mod = isHttps ? https : http;
+
+  const options: http.RequestOptions & https.RequestOptions = {
+    hostname: url.hostname,
+    port: url.port || (isHttps ? 443 : 80),
+    path: url.pathname + url.search,
+    method: 'GET',
+    headers: makeHeaders(token, ''),
+    timeout: timeoutMs,
+  };
+
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const req = mod.request(options, (res) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+
+      res.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > MAX_MEDIA_BYTES) {
+          req.destroy();
+          reject(
+            new MatrixError(
+              0,
+              'M_MEDIA_TOO_LARGE',
+              `media is larger than the ${MAX_MEDIA_BYTES / (1024 * 1024)} MB this client holds`,
+              null,
+            ),
+          );
+          return;
+        }
+        chunks.push(chunk);
+      });
+
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks);
+        const status = res.statusCode ?? 0;
+        if (status >= 200 && status < 300) {
+          resolve(new Uint8Array(raw));
+          return;
+        }
+
+        let parsed: unknown = null;
+        try {
+          parsed = JSON.parse(raw.toString('utf-8'));
+        } catch {
+          // Not JSON: the status is what the caller has to read.
+        }
+        const body = (parsed ?? {}) as Record<string, unknown>;
+        reject(
+          new MatrixError(
+            status,
+            (body.errcode as string) ?? 'M_UNKNOWN',
+            (body.error as string) ?? `HTTP ${status}`,
+            parsed,
+          ),
+        );
+      });
+    });
+
+    req.on('error', (err) => reject(new MatrixError(0, 'M_CONNECTION_ERROR', err.message, null)));
+
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new MatrixError(0, 'M_REQUEST_TIMEOUT', 'Request timed out', null));
+    });
+
     req.end();
   });
 }

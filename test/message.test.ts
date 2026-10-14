@@ -227,3 +227,81 @@ describe('MatrixMessage.logString', () => {
     expect(m.logString).toBe('Room:    !r:ex.com\n\nhi');
   });
 });
+
+// ── media ──────────────────────────────────────────────────────────────────
+
+describe('media', () => {
+  it('keeps the file a media message carries', () => {
+    const m = MatrixMessage.fromEvent(
+      event({
+        content: {
+          msgtype: 'm.image',
+          body: 'screenshot.png',
+          url: 'mxc://muromec.nl/abc123',
+          info: { mimetype: 'image/png', size: 291_000 },
+        },
+      }),
+      '!room:example.com',
+    );
+
+    expect(m.media).toEqual({
+      url: 'mxc://muromec.nl/abc123',
+      name: 'screenshot.png',
+      mime: 'image/png',
+      size: 291_000,
+    });
+  });
+
+  it('prefers the filename the far side sent over the body', () => {
+    const m = MatrixMessage.fromEvent(
+      event({
+        content: {
+          msgtype: 'm.file',
+          body: 'report.pdf',
+          filename: 'Quarterly report.pdf',
+          url: 'mxc://muromec.nl/def456',
+          info: { mimetype: 'application/pdf', size: 1024 },
+        },
+      }),
+      '!r:ex.com',
+    );
+
+    expect(m.media?.name).toBe('Quarterly report.pdf');
+    expect(m.media?.mime).toBe('application/pdf');
+    expect(m.media?.size).toBe(1024);
+  });
+
+  it('still has the file when the event said nothing about its type or size', () => {
+    const m = MatrixMessage.fromEvent(
+      event({ content: { msgtype: 'm.image', body: 'shot.png', url: 'mxc://muromec.nl/ghi' } }),
+      '!r:ex.com',
+    );
+
+    expect(m.media).toEqual({
+      url: 'mxc://muromec.nl/ghi',
+      name: 'shot.png',
+      mime: 'application/octet-stream',
+      size: undefined,
+    });
+  });
+
+  it('leaves an encrypted file alone — the key is not ours to use', () => {
+    const m = MatrixMessage.fromEvent(
+      event({
+        content: {
+          msgtype: 'm.file',
+          body: 'x.pdf',
+          file: { url: 'mxc://muromec.nl/enc', key: { k: 'k' }, iv: 'iv' },
+        },
+      }),
+      '!r:ex.com',
+    );
+
+    expect(m.media).toBeUndefined();
+  });
+
+  it('has no media on a text message', () => {
+    const m = MatrixMessage.fromEvent(event(), '!r:ex.com');
+    expect(m.media).toBeUndefined();
+  });
+});

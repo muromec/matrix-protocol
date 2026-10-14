@@ -19,12 +19,15 @@ import { createServer, type Server } from 'node:http';
 // from the queue in FIFO order.  The last request details are captured
 // for assertions.
 
-interface CannedResponse {
-  status: number;
-  body: unknown;
-}
+/** A queued answer: JSON, or raw bytes for the media path. */
+type CannedResponse = { status: number; body: unknown } | { status: number; bytes: Buffer };
 
-type LastRequest = { method: string; path: string; body: string } | null;
+type LastRequest = {
+  method: string;
+  path: string;
+  body: string;
+  headers: Record<string, string>;
+} | null;
 
 class MockMatrixServer {
   #server: Server;
@@ -46,6 +49,12 @@ class MockMatrixServer {
           method: req.method ?? 'GET',
           path: req.url ?? '/',
           body,
+          headers: Object.fromEntries(
+            Object.entries(req.headers).map(([key, value]) => [
+              key.toLowerCase(),
+              Array.isArray(value) ? value.join(',') : (value ?? ''),
+            ]),
+          ),
         };
 
         // A silent server takes the request and never answers it.
@@ -53,6 +62,12 @@ class MockMatrixServer {
 
         // Pop the oldest queued response, or default to 200 {}.
         const canned = this.#queue.shift() ?? { status: 200, body: {} };
+
+        if ('bytes' in canned) {
+          res.writeHead(canned.status, { 'Content-Type': 'application/octet-stream' });
+          res.end(canned.bytes);
+          return;
+        }
 
         res.writeHead(canned.status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(canned.body));
@@ -72,6 +87,11 @@ class MockMatrixServer {
   /** Enqueue a response for a future request.  FIFO order. */
   enqueue(status: number, body: unknown): void {
     this.#queue.push({ status, body });
+  }
+
+  /** Enqueue raw bytes for a future request — the media download answers with a body, not JSON. */
+  enqueueBytes(status: number, bytes: Uint8Array): void {
+    this.#queue.push({ status, bytes: Buffer.from(bytes) });
   }
 
   /** Returns the last request received (method, path, body). */
@@ -804,5 +824,38 @@ describe('MatrixRTC token exchange', () => {
     expect(body.room_id).toBeUndefined();
     expect(body.slot_id).toBeUndefined();
     expect(body.openid_token.matrix_server_name).toBe('hs.example');
+  });
+});
+
+// ── downloadMedia ──────────────────────────────────────────────────────────
+
+describe('downloadMedia', () => {
+  it('fetches the bytes behind an mxc url, and proves who is asking', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueueBytes(200, new Uint8Array([1, 2, 3, 4, 5]));
+
+    const bytes = await client.downloadMedia('mxc://muromec.nl/abc123');
+
+    expect([...bytes]).toEqual([1, 2, 3, 4, 5]);
+    // The authenticated media endpoint (MSC3916).  This homeserver answers 401 on it without a
+    // token and 404 on the legacy path, measured 2026-10-13 — so there is one path to take.
+    expect(srv.lastRequest?.path).toBe('/_matrix/client/v1/media/download/muromec.nl/abc123');
+    expect(srv.lastRequest?.headers.authorization).toBe('Bearer tok_test');
+  });
+
+  it('refuses anything that is not an mxc url', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+
+    await expect(client.downloadMedia('https://example.com/shot.png')).rejects.toThrow(/mxc/);
+  });
+
+  it('reports what the homeserver said when the media is gone', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(404, { errcode: 'M_NOT_FOUND', error: 'Media not found' });
+
+    await expect(client.downloadMedia('mxc://muromec.nl/gone')).rejects.toThrow(/M_NOT_FOUND/);
   });
 });

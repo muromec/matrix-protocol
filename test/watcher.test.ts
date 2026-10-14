@@ -541,3 +541,60 @@ describe('call events', () => {
     await stop();
   });
 });
+
+// ── media messages ─────────────────────────────────────────────────────────
+
+describe('media messages', () => {
+  const IMAGE = {
+    type: 'm.room.message',
+    sender: '@alice:ex.com',
+    event_id: '$img1',
+    origin_server_ts: 1_700_000_000_000,
+    room_id: '!r:ex.com',
+    content: {
+      msgtype: 'm.image',
+      body: 'shot.png',
+      url: 'mxc://muromec.nl/abc123',
+      info: { mimetype: 'image/png', size: 12 },
+    },
+  };
+
+  /** Collect what the watcher hands on, out of a scripted sync stream. */
+  async function messagesFrom(
+    responses: unknown[],
+  ): Promise<{ seen: WatcherEvent[]; stop: () => Promise<void> }> {
+    const seen: WatcherEvent[] = [];
+    const { stop } = await bootWithSync(responses, async (w) => {
+      w.on('message', (e) => seen.push(e));
+    });
+    return { seen, stop };
+  }
+
+  it('hands a file on instead of dropping it', async () => {
+    const { seen, stop } = await messagesFrom([joinSync([], [IMAGE])]);
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].message?.media?.url).toBe('mxc://muromec.nl/abc123');
+    expect(seen[0].message?.media?.name).toBe('shot.png');
+    expect(seen[0].message?.text).toBe('shot.png');
+    expect(seen[0].roomId).toBe('!r:ex.com');
+
+    await stop();
+  });
+
+  it('still says nothing when a message has neither text nor a file', async () => {
+    const empty = {
+      type: 'm.room.message',
+      sender: '@alice:ex.com',
+      event_id: '$empty1',
+      origin_server_ts: 1,
+      room_id: '!r:ex.com',
+      content: { msgtype: 'm.text', body: '   ' },
+    };
+    const { seen, stop } = await messagesFrom([joinSync([], [empty])]);
+
+    expect(seen).toHaveLength(0);
+
+    await stop();
+  });
+});

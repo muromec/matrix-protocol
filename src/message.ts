@@ -35,6 +35,35 @@ export interface OutgoingMatrixMessage {
   inReplyTo?: string;
 }
 
+/**
+ * A file a message carries: where the bytes are, and what the far side said about them.
+ *
+ * Nothing here is trusted.  The name is text the sender chose, the type and size are its claims,
+ * and the bytes are only fetched when the consumer decides to.
+ */
+export interface MediaRef {
+  /** The `mxc://` URL the bytes are fetched from — with this client's own token. */
+  url: string;
+  /** The filename as the far side sent it. */
+  name: string;
+  /** The declared MIME type, or `application/octet-stream` when the event did not say. */
+  mime: string;
+  /** The declared size in bytes, when the event said. */
+  size: number | undefined;
+}
+
+/**
+ * The msgtypes that carry a file rather than (or beside) text.
+ *
+ * A watcher that keeps only `m.text` and `m.notice` never sees a screenshot: the file is dropped
+ * before it becomes a message, and nothing downstream can tell that anything was there.
+ */
+export function isMediaMessageType(msgtype: string | undefined): boolean {
+  return (
+    msgtype === 'm.image' || msgtype === 'm.file' || msgtype === 'm.audio' || msgtype === 'm.video'
+  );
+}
+
 // ── MatrixMessage ──────────────────────────────────────────────────────────
 
 export class MatrixMessage {
@@ -49,6 +78,9 @@ export class MatrixMessage {
 
   /** HTML formatted body, if present. */
   readonly html: string | undefined;
+
+  /** The file this message carries, when it carries one. */
+  readonly media: MediaRef | undefined;
 
   /** Sender MXID. Mirrors EmailMessage.from. */
   readonly from: string;
@@ -65,6 +97,7 @@ export class MatrixMessage {
     this.headers = {} as MatrixMessageHeaders;
     this.text = '';
     this.html = undefined;
+    this.media = undefined;
     this.from = '';
     this.#outboundRoomId = '';
     this.#outboundBody = '';
@@ -114,6 +147,21 @@ export class MatrixMessage {
       (self as { html: string | undefined }).html = formattedBody;
     } else {
       (self as { html: string | undefined }).html = undefined;
+    }
+
+    // A media message: the bytes live behind an mxc URL that only this client's token can open.
+    // An encrypted file (`content.file`) is left alone, because its key is not ours to use —
+    // the same wall the room's text meets.
+    const url = typeof content.url === 'string' ? content.url : '';
+    if (url.startsWith('mxc://')) {
+      const info = (content.info ?? {}) as { mimetype?: unknown; size?: unknown };
+      const filename = typeof content.filename === 'string' ? content.filename : '';
+      (self as { media: MediaRef | undefined }).media = {
+        url,
+        name: filename || body,
+        mime: typeof info.mimetype === 'string' ? info.mimetype : 'application/octet-stream',
+        size: typeof info.size === 'number' ? info.size : undefined,
+      };
     }
 
     return self;

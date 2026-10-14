@@ -11,7 +11,7 @@
 //   - Deduplication via event_id tracking
 
 import { MatrixClient, MatrixError, type MatrixEvent, type SyncResponse } from './client.ts';
-import { MatrixMessage } from './message.ts';
+import { MatrixMessage, isMediaMessageType } from './message.ts';
 import { loadSyncToken, saveSyncToken } from './sync-token.ts';
 import { chain } from './data-sources/chain.ts';
 import type { DataSource, Warmable } from './data-sources/types.ts';
@@ -257,10 +257,14 @@ export class MatrixWatcher extends EventTarget {
           if (event.type !== 'm.room.message') continue;
 
           const msgtype = event.content?.msgtype as string | undefined;
-          if (msgtype !== 'm.text' && msgtype !== 'm.notice') continue;
+          if (msgtype !== 'm.text' && msgtype !== 'm.notice' && !isMediaMessageType(msgtype)) {
+            continue;
+          }
 
           const msg = MatrixMessage.fromEvent(event, roomId);
-          if (msg.text.length === 0) continue;
+          // A file is worth handing on even with no words beside it.  An event that carries
+          // neither is nothing to report.
+          if (msg.text.length === 0 && !msg.media) continue;
 
           this.#emit({ type: 'message', message: msg, roomId });
         }
