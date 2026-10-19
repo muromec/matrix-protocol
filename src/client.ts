@@ -15,12 +15,16 @@
 //     is expected to loop, passing the `next_batch` token from each
 //     response.
 //   - All methods throw on non-2xx responses with the Matrix error body.
-//   - Transaction IDs (`txnId`) are generated as a monotonic counter to
-//     guarantee idempotency within a client session.
+//   - Transaction IDs (`txnId`) are `<epoch-ms>-<seq>`: unique per send, and not repeated
+//     across a restart the way a bare counter was.
 
 import * as https from 'node:https';
 import * as http from 'node:http';
 import { RTC_MEMBER_TYPES } from './rtc.ts';
+
+// Transaction ids are minted per send: the time it was made, and a sequence to separate two
+// sends in the same millisecond.
+let txnSeq = 0;
 
 // ── types ──────────────────────────────────────────────────────────────────
 
@@ -160,7 +164,6 @@ export class MatrixClient {
   #baseUrl: string;
   #accessToken: string;
   #requestTimeout: number;
-  #txnCounter: number;
   #userId: string;
   #deviceId: string;
   #currentPresence: string;
@@ -177,7 +180,6 @@ export class MatrixClient {
     this.#userId = userId;
     this.#deviceId = deviceId;
     this.#requestTimeout = requestTimeout;
-    this.#txnCounter = 0;
     this.#currentPresence = 'online';
   }
 
@@ -284,8 +286,8 @@ export class MatrixClient {
   // ── send ───────────────────────────────────────────────────────────────
 
   /**
-   * Send a message event to a room.  `txnId` is auto-generated as a
-   * monotonic counter (idempotent within this client instance).
+   * Send a message event to a room.  `txnId` is auto-generated as `<epoch-ms>-<seq>`:
+   * unique per send, and not repeated by a restart.
    *
    * `eventType` is typically `"m.room.message"`.  `content` is the
    * event content dict.
@@ -293,7 +295,11 @@ export class MatrixClient {
    * Returns the assigned `event_id`.
    */
   async send(roomId: string, eventType: string, content: Record<string, unknown>): Promise<string> {
-    const txnId = `${this.#txnCounter++}`;
+    // A transaction id is the client saying "this exact send".  Time says when it was made; the
+    // sequence keeps two sends in the same millisecond apart.  A bare counter said the same thing
+    // again after a restart, and the server answered with the older event while the room never
+    // saw the message.
+    const txnId = `${Date.now()}-${txnSeq++}`;
     const url = `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/${encodeURIComponent(eventType)}/${txnId}`;
     const resp = (await request(
       'PUT',

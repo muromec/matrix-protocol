@@ -386,25 +386,32 @@ describe('send', () => {
 
     const req = srv.lastRequest;
     expect(req?.method).toBe('PUT');
-    expect(req?.path).toContain('/rooms/!room1%3Amatrix.org/send/m.room.message/0');
+    expect(req?.path).toMatch(/\/rooms\/!room1%3Amatrix.org\/send\/m.room.message\/\d{13}-\d+$/);
     expect(JSON.parse(req?.body ?? '{}').body).toBe('hi there');
   });
 
-  it('increments txnId on each send (idempotency)', async () => {
+  it('gives every send its own transaction id, stamped with the time it was minted', async () => {
+    // The id is what a retransmission would repeat, so it cannot come from our own state: a counter
+    // said the same thing again after a restart, and the server answered with the older event while
+    // the room never saw the message.  Time says when; the sequence says which send in that
+    // millisecond.
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
+    const seen: string[] = [];
+    const stamps: number[] = [];
 
-    srv.enqueue(200, { event_id: '$evt1' });
-    await client.send('!room1:matrix.org', 'm.room.message', { body: 'a' });
-    expect(srv.lastRequest?.path).toContain('/0');
+    for (const body of ['a', 'b', 'c']) {
+      srv.enqueue(200, { event_id: `$${body}` });
+      await client.send('!room1:matrix.org', 'm.room.message', { body });
+      const txn = srv.lastRequest?.path.split('/').pop() ?? '';
+      seen.push(txn);
+      stamps.push(Number(txn.split('-')[0]));
+    }
 
-    srv.enqueue(200, { event_id: '$evt2' });
-    await client.send('!room1:matrix.org', 'm.room.message', { body: 'b' });
-    expect(srv.lastRequest?.path).toContain('/1');
-
-    srv.enqueue(200, { event_id: '$evt3' });
-    await client.send('!room1:matrix.org', 'm.room.message', { body: 'c' });
-    expect(srv.lastRequest?.path).toContain('/2');
+    expect(new Set(seen).size).toBe(3);
+    for (const txn of seen) expect(txn).toMatch(/^\d{13}-\d+$/);
+    // A clock, not a counter dressed as one: an epoch-ms from 2023 or later.
+    for (const ms of stamps) expect(ms).toBeGreaterThan(1_700_000_000_000);
   });
 
   it('sendText is a convenience wrapper', async () => {
