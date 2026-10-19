@@ -9,7 +9,7 @@
 //   Error handling    — 401, 403, 5xx, network errors, timeouts
 
 import { describe, it, expect, afterAll } from 'vitest';
-import { MatrixClient, MatrixError } from '../src/client.ts';
+import { DEFAULT_DEVICE_ID, MatrixClient, MatrixError } from '../src/client.ts';
 import { createServer, type Server } from 'node:http';
 
 // ── mock Matrix homeserver ─────────────────────────────────────────────────
@@ -181,6 +181,22 @@ describe('login', () => {
     expect(parsed.password).toBe('secret');
     expect(parsed.device_id).toBe('my-device');
     expect(parsed.initial_device_display_name).toBe('Test Bot');
+  });
+
+  it('names its device when none is given, so a reconnect is not a new device', async () => {
+    // A client that lets the server choose gets a fresh device on every login — and the watcher logs
+    // in again on every reconnect, so the account grows a device per interruption.
+    const srv = await newServer();
+    srv.enqueue(200, { user_id: '@bot:matrix.org', access_token: 'tok', device_id: 'ASSIGNED' });
+
+    await MatrixClient.login({
+      baseUrl: baseUrl(srv),
+      userId: '@bot:matrix.org',
+      password: 'secret',
+    });
+
+    const parsed = JSON.parse(srv.lastRequest?.body ?? '{}');
+    expect(parsed.device_id).toBe(DEFAULT_DEVICE_ID);
   });
 
   it('throws MatrixError on bad credentials (403)', async () => {

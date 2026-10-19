@@ -1,4 +1,5 @@
 export {
+  DEFAULT_DEVICE_ID,
   MatrixClient,
   type MatrixConfig,
   type MatrixEvent,

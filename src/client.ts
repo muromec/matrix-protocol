@@ -26,6 +26,10 @@ import { RTC_MEMBER_TYPES } from './rtc.ts';
 // sends in the same millisecond.
 let txnSeq = 0;
 
+// The device every client presents unless its config names one: a login that lets the server choose
+// hands back a fresh device each time, and the watcher logs in again on every reconnect.
+export const DEFAULT_DEVICE_ID = 'matrix-protocol';
+
 // ── types ──────────────────────────────────────────────────────────────────
 
 export interface MatrixConfig {
@@ -39,7 +43,7 @@ export interface MatrixConfig {
   /** Password for login. */
   password: string;
 
-  /** Optional device ID.  If omitted, the server assigns one. */
+  /** Device ID.  Defaults to `DEFAULT_DEVICE_ID`, so a reconnect is the same device. */
   deviceId?: string;
 
   /** Initial device display name. */
@@ -198,7 +202,7 @@ export class MatrixClient {
       identifier: { type: 'm.id.user', user: config.userId },
       password: config.password,
     };
-    if (config.deviceId) body.device_id = config.deviceId;
+    body.device_id = config.deviceId ?? DEFAULT_DEVICE_ID;
     if (config.initialDeviceDisplayName) {
       body.initial_device_display_name = config.initialDeviceDisplayName;
     }
