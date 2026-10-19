@@ -352,6 +352,26 @@ describe('sync', () => {
 // ── send ───────────────────────────────────────────────────────────────────
 
 describe('send', () => {
+
+  it('gives two clients distinct transaction ids, so a restart cannot be read as a retry', async () => {
+    // A restart builds a second client for the same user and the same room.  A counter of its own
+    // starts at zero again, and a server that has seen that number under this device answers with
+    // the *earlier* event id instead of posting: the room never sees the message and the caller is
+    // told it was sent.  One id per send, from a space no restart repeats.
+    const srv = await newServer();
+    const first = await loginAndGetClient(srv);
+    srv.enqueue(200, { event_id: '$first' });
+    await first.send('!room1:matrix.org', 'm.room.message', { body: 'one' });
+    const firstTxn = srv.lastRequest?.path.split('/').pop() ?? '';
+
+    const second = await loginAndGetClient(srv);
+    srv.enqueue(200, { event_id: '$second' });
+    await second.send('!room1:matrix.org', 'm.room.message', { body: 'two' });
+    const secondTxn = srv.lastRequest?.path.split('/').pop() ?? '';
+
+    expect(firstTxn).not.toBe('');
+    expect(secondTxn).not.toBe(firstTxn);
+  });
   it('sends a message event to a room', async () => {
     const srv = await newServer();
     const client = await loginAndGetClient(srv);
