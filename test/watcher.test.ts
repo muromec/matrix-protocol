@@ -11,7 +11,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadSession, saveSession } from '../src/session.ts';
+import { loadState, saveState } from '../src/state.ts';
 
 let mockClient: MockClient;
 /** The mocked statics, kept by name so a case can reset or restate them without a cast. */
@@ -651,10 +651,12 @@ describe('session', () => {
   it('runs on a stored session instead of logging in', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'mw-session-'));
     const statePath = join(dir, 'session.json');
-    await saveSession(statePath, {
-      userId: '@butler:muromec.nl',
-      deviceId: 'DEV-9',
-      accessToken: 'tok-9',
+    await saveState(statePath, {
+      session: {
+        userId: '@butler:muromec.nl',
+        deviceId: 'DEV-9',
+        accessToken: 'tok-9',
+      },
       syncToken: 's9',
     });
 
@@ -678,11 +680,13 @@ describe('session', () => {
   it('refreshes a refused token and stores the rotated pair', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'mw-refresh-'));
     const statePath = join(dir, 'session.json');
-    await saveSession(statePath, {
-      userId: '@butler:muromec.nl',
-      deviceId: 'DEV-9',
-      accessToken: 'spent-token',
-      refreshToken: 'r1',
+    await saveState(statePath, {
+      session: {
+        userId: '@butler:muromec.nl',
+        deviceId: 'DEV-9',
+        accessToken: 'spent-token',
+        refreshToken: 'r1',
+      },
       syncToken: 's1',
     });
 
@@ -722,9 +726,63 @@ describe('session', () => {
     expect(refreshMock.mock.calls[0]?.[1]).toBe('r1');
     expect(loginMock.mock.calls.length).toBe(0);
 
-    const stored = await loadSession(statePath);
-    expect(stored?.accessToken).toBe('refreshed-token');
-    expect(stored?.refreshToken).toBe('rotated-refresh');
-    expect(stored?.syncToken).toBe('s1');
+    const stored = await loadState(statePath);
+    expect(stored.session?.accessToken).toBe('refreshed-token');
+    expect(stored.session?.refreshToken).toBe('rotated-refresh');
+    expect(stored.syncToken).toBe('s1');
+  });
+
+  it('logs in again when the refresh is spent, and resumes where the stream ended', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mw-relogin-'));
+    const statePath = join(dir, 'session.json');
+    await saveState(statePath, {
+      session: {
+        userId: '@butler:muromec.nl',
+        deviceId: 'DEV-9',
+        accessToken: 'spent-token',
+        refreshToken: 'spent-refresh',
+      },
+      syncToken: 's7',
+    });
+
+    loginMock.mock.calls.length = 0;
+    refreshMock.mock.calls.length = 0;
+    refreshMock.mockRejectedValue(new MatrixError(401, 'M_UNKNOWN_TOKEN', 'refresh refused', null));
+
+    // The stored token is refused and the refresh is spent, so the password is the only door left.
+    fromSessionMock.mockImplementation((opts: Record<string, unknown>) => {
+      mockClient = freshMockClient({ accessToken: String(opts.accessToken) });
+      mockClient.sync = vi
+        .fn()
+        .mockRejectedValue(new MatrixError(401, 'M_UNKNOWN_TOKEN', 'refused', null));
+      return mockClient;
+    });
+
+    // The login is the trigger: whatever the fresh client then syncs with is the answer.
+    let resumedWith: string | undefined;
+    const resumed = new Promise<void>((resolve) => {
+      loginMock.mockImplementationOnce(async () => {
+        mockClient = freshMockClient();
+        mockClient.sync = vi.fn().mockImplementation(async (since?: string) => {
+          resumedWith = since;
+          resolve();
+          return await tick({ next_batch: 's8', rooms: {} });
+        });
+        return mockClient;
+      });
+    });
+
+    mockClient = null!;
+    const w = new MatrixWatcherCtor(makeConfig({ statePath, reconnectDelay: 1 }));
+    const running = w.start();
+    await resumed;
+    w.stop();
+    await running;
+
+    expect(refreshMock.mock.calls.length).toBe(1);
+    expect(loginMock.mock.calls.length).toBe(1);
+    // The position belongs to the account's stream, not to the credentials that just died.
+    expect(resumedWith).toBe('s7');
+    expect(typeof (await loadState(statePath)).syncToken).toBe('string');
   });
 });

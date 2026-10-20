@@ -12,7 +12,7 @@ export {
   type RtcTokenDialect,
   MatrixError,
 } from './client.ts';
-export { loadSession, saveSession, type MatrixSession } from './session.ts';
+export { loadState, saveState, type ClientState, type SessionCredentials } from './state.ts';
 export { MatrixMessage, type MatrixMessageHeaders, type OutgoingMatrixMessage } from './message.ts';
 export { MatrixWatcher, type WatcherConfig, type WatcherEvent } from './watcher.ts';
 export {
