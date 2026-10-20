@@ -1,8 +1,7 @@
 // ── Matrix CS API Client ───────────────────────────────────────────────────
 //
-// Zero-dependency Matrix Client-Server API client built on `node:http` /
-// `node:https`.  Covers the small subset of the CS API needed for a
-// stateless bot:
+// Zero-dependency Matrix Client-Server API client built on the platform's `fetch`.  Covers the small
+// subset of the CS API a stateless bot needs:
 //
 //   POST /login             — password login, get access_token
 //   GET  /sync              — long-poll for new events
@@ -18,8 +17,6 @@
 //   - Transaction IDs (`txnId`) are `<epoch-ms>-<seq>`: unique per send, and not repeated
 //     across a restart the way a bare counter was.
 
-import * as https from 'node:https';
-import * as http from 'node:http';
 import { RTC_MEMBER_TYPES } from './rtc.ts';
 
 // Transaction ids are minted per send: the time it was made, and a sequence to separate two
@@ -356,12 +353,15 @@ export class MatrixClient {
     params.set('set_presence', this.#currentPresence);
 
     const url = `${this.#baseUrl}/_matrix/client/v3/sync?${params.toString()}`;
+    // The server holds the connection for `timeoutMs`; a deadline equal to that would abort a
+    // healthy long-poll just before its answer arrives, so it gets room on top.
+    const deadline = Math.max(this.#requestTimeout, timeoutMs + 10_000);
     const resp = (await request(
       'GET',
       url,
       undefined,
       this.#accessToken,
-      this.#requestTimeout,
+      deadline,
       signal,
     )) as SyncResponse;
 
@@ -821,9 +821,34 @@ function makeHeaders(token: string | undefined, bodyStr: string): Record<string,
   }
   if (bodyStr.length > 0) {
     headers['Content-Type'] = 'application/json';
-    headers['Content-Length'] = String(Buffer.byteLength(bodyStr));
   }
   return headers;
+}
+
+/** The signal for one request: the caller's, a deadline of ours, or both together. */
+function signalFor(timeoutMs: number, caller?: AbortSignal): AbortSignal | undefined {
+  const deadline = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
+  if (caller && deadline) return AbortSignal.any([caller, deadline]);
+  return caller ?? deadline;
+}
+
+/**
+ * Turn what fetch threw into the vocabulary this client has always used.
+ *
+ * Callers branch on `M_REQUEST_TIMEOUT` and `M_CONNECTION_ERROR`, and a caller's own abort keeps its
+ * own name so it is not mistaken for a fault of the transport.
+ */
+function transportError(err: unknown): Error {
+  if (err instanceof Error && err.name === 'TimeoutError') {
+    return new MatrixError(0, 'M_REQUEST_TIMEOUT', 'Request timed out', null);
+  }
+  if (err instanceof Error && err.name === 'AbortError') return err;
+  return new MatrixError(
+    0,
+    'M_CONNECTION_ERROR',
+    err instanceof Error ? err.message : String(err),
+    null,
+  );
 }
 
 async function request<T>(
@@ -835,82 +860,37 @@ async function request<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   const bodyStr = makeBody(method, body);
-  const url = new URL(urlString);
-  const isHttps = url.protocol === 'https:';
-  const mod = isHttps ? https : http;
-
   const headers = makeHeaders(token, bodyStr);
 
-  const options: http.RequestOptions & https.RequestOptions = {
-    hostname: url.hostname,
-    port: url.port || (isHttps ? 443 : 80),
-    path: url.pathname + url.search,
-    method,
-    headers,
-    timeout: timeoutMs,
-  };
-
-  return new Promise<T>((resolve, reject) => {
-    if (signal?.aborted) {
-      const err = new Error('The operation was aborted');
-      err.name = 'AbortError';
-      reject(err);
-      return;
-    }
-
-    const req = mod.request(options, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', () => {
-        const raw = Buffer.concat(chunks).toString('utf-8');
-        let parsed: unknown;
-        try {
-          parsed = raw.length > 0 ? JSON.parse(raw) : {};
-        } catch {
-          reject(new Error(`Matrix: invalid JSON response: ${raw.slice(0, 200)}`));
-          return;
-        }
-
-        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-          resolve(parsed as T);
-          return;
-        }
-
-        const err = parsed as Record<string, unknown>;
-        reject(
-          new MatrixError(
-            res.statusCode ?? 0,
-            (err.errcode as string) ?? 'M_UNKNOWN',
-            (err.error as string) ?? `HTTP ${res.statusCode}`,
-            parsed,
-          ),
-        );
-      });
+  let res: Response;
+  try {
+    res = await fetch(urlString, {
+      method,
+      headers,
+      ...(bodyStr.length > 0 ? { body: bodyStr } : {}),
+      signal: signalFor(timeoutMs, signal),
     });
+  } catch (err) {
+    throw transportError(err);
+  }
 
-    req.on('error', (err) => {
-      reject(new MatrixError(0, 'M_CONNECTION_ERROR', err.message, null));
-    });
+  const raw = await res.text();
+  let parsed: unknown;
+  try {
+    parsed = raw.length > 0 ? JSON.parse(raw) : {};
+  } catch {
+    throw new Error(`Matrix: invalid JSON response: ${raw.slice(0, 200)}`);
+  }
 
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new MatrixError(0, 'M_REQUEST_TIMEOUT', 'Request timed out', null));
-    });
+  if (res.ok) return parsed as T;
 
-    if (signal) {
-      const onAbort = () => {
-        const err = new Error('The operation was aborted');
-        err.name = 'AbortError';
-        reject(err);
-        req.destroy();
-      };
-      signal.addEventListener('abort', onAbort, { once: true });
-      req.once('close', () => signal.removeEventListener('abort', onAbort));
-    }
-
-    if (bodyStr.length > 0) req.write(bodyStr);
-    req.end();
-  });
+  const err = parsed as Record<string, unknown>;
+  throw new MatrixError(
+    res.status,
+    (err.errcode as string) ?? 'M_UNKNOWN',
+    (err.error as string) ?? `HTTP ${res.status}`,
+    parsed,
+  );
 }
 
 /** What this client will hold in memory for one media download. */
@@ -919,83 +899,67 @@ const MAX_MEDIA_BYTES = 32 * 1024 * 1024;
 /**
  * GET a URL and answer with the body's bytes.
  *
- * The `request` helper above cannot carry this: a media download is not JSON, and its size is the
- * far side's.  The cap is a safety bound rather than a policy — what counts as too big to hand
- * over is decided where the file is shown.
+ * A media download is not JSON and its size is the far side's, so it is read as a stream against a
+ * cap.  The cap is a safety bound rather than a policy — what counts as too big to hand over is
+ * decided where the file is shown.
  */
 async function requestBytes(
   urlString: string,
   token: string | undefined,
   timeoutMs: number,
 ): Promise<Uint8Array> {
-  const url = new URL(urlString);
-  const isHttps = url.protocol === 'https:';
-  const mod = isHttps ? https : http;
+  let res: Response;
+  try {
+    res = await fetch(urlString, {
+      method: 'GET',
+      headers: makeHeaders(token, ''),
+      signal: signalFor(timeoutMs),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
 
-  const options: http.RequestOptions & https.RequestOptions = {
-    hostname: url.hostname,
-    port: url.port || (isHttps ? 443 : 80),
-    path: url.pathname + url.search,
-    method: 'GET',
-    headers: makeHeaders(token, ''),
-    timeout: timeoutMs,
-  };
-
-  return new Promise<Uint8Array>((resolve, reject) => {
-    const req = mod.request(options, (res) => {
-      const chunks: Buffer[] = [];
-      let size = 0;
-
-      res.on('data', (chunk: Buffer) => {
-        size += chunk.length;
-        if (size > MAX_MEDIA_BYTES) {
-          req.destroy();
-          reject(
-            new MatrixError(
-              0,
-              'M_MEDIA_TOO_LARGE',
-              `media is larger than the ${MAX_MEDIA_BYTES / (1024 * 1024)} MB this client holds`,
-              null,
-            ),
-          );
-          return;
-        }
-        chunks.push(chunk);
-      });
-
-      res.on('end', () => {
-        const raw = Buffer.concat(chunks);
-        const status = res.statusCode ?? 0;
-        if (status >= 200 && status < 300) {
-          resolve(new Uint8Array(raw));
-          return;
-        }
-
-        let parsed: unknown = null;
-        try {
-          parsed = JSON.parse(raw.toString('utf-8'));
-        } catch {
-          // Not JSON: the status is what the caller has to read.
-        }
-        const body = (parsed ?? {}) as Record<string, unknown>;
-        reject(
-          new MatrixError(
-            status,
-            (body.errcode as string) ?? 'M_UNKNOWN',
-            (body.error as string) ?? `HTTP ${status}`,
-            parsed,
-          ),
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const reader = res.body?.getReader();
+  if (reader) {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_MEDIA_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new MatrixError(
+          0,
+          'M_MEDIA_TOO_LARGE',
+          `media is larger than the ${MAX_MEDIA_BYTES / (1024 * 1024)} MB this client holds`,
+          null,
         );
-      });
-    });
+      }
+      chunks.push(value);
+    }
+  }
 
-    req.on('error', (err) => reject(new MatrixError(0, 'M_CONNECTION_ERROR', err.message, null)));
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
 
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new MatrixError(0, 'M_REQUEST_TIMEOUT', 'Request timed out', null));
-    });
+  if (res.ok) return bytes;
 
-    req.end();
-  });
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    // Not JSON: the status is what the caller has to read.
+  }
+  const body = (parsed ?? {}) as Record<string, unknown>;
+  throw new MatrixError(
+    res.status,
+    (body.errcode as string) ?? 'M_UNKNOWN',
+    (body.error as string) ?? `HTTP ${res.status}`,
+    parsed,
+  );
 }
