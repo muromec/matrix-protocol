@@ -144,6 +144,15 @@ export interface OpenIdToken {
   expires_in: number;
 }
 
+// ── devices ────────────────────────────────────────────────────────────────
+
+/** A device as the homeserver lists it. */
+export interface DeviceInfo {
+  device_id: string;
+  display_name?: string;
+  last_seen_ip?: string;
+  last_seen_ts?: number;
+}
 /** What a focus's token service answers. */
 export interface LivekitToken {
   /** The SFU's WebSocket address. */
@@ -724,6 +733,53 @@ export class MatrixClient {
     };
 
     return { url: resp.url, jwt: resp.jwt, expiresAtSec: jwtExpiry(resp.jwt) };
+  }
+
+  // ── devices ────────────────────────────────────────────────────────────
+
+  /** Every device the account has, as the server lists it. */
+  async listDevices(): Promise<DeviceInfo[]> {
+    const resp = (await request(
+      'GET',
+      `${this.#baseUrl}/_matrix/client/v3/devices`,
+      undefined,
+      this.#accessToken,
+      this.#requestTimeout,
+    )) as { devices?: DeviceInfo[] };
+    return resp.devices ?? [];
+  }
+
+  /**
+   * Delete every device the predicate selects.
+   *
+   * A device is what a session is: deleting it signs that client out and takes its tokens with it,
+   * so the caller decides what may go.  The password is user-interactive auth — the server will not
+   * delete a device on a bare access token — and the returned list is what was actually removed.
+   *
+   * Nothing matching sends no request, so a predicate that keeps everything costs nothing.
+   */
+  async purgeDevices(
+    predicate: (device: DeviceInfo) => boolean,
+    password: string,
+  ): Promise<string[]> {
+    const doomed = (await this.listDevices()).filter(predicate).map((d) => d.device_id);
+    if (doomed.length === 0) return [];
+
+    await request(
+      'POST',
+      `${this.#baseUrl}/_matrix/client/v3/delete_devices`,
+      {
+        devices: doomed,
+        auth: {
+          type: 'm.login.password',
+          identifier: { type: 'm.id.user', user: this.#userId },
+          password,
+        },
+      },
+      this.#accessToken,
+      this.#requestTimeout,
+    );
+    return doomed;
   }
 }
 

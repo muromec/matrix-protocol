@@ -901,3 +901,52 @@ describe('downloadMedia', () => {
     await expect(client.downloadMedia('mxc://muromec.nl/gone')).rejects.toThrow(/M_NOT_FOUND/);
   });
 });
+
+// ── devices ────────────────────────────────────────────────────────────────
+
+describe('devices', () => {
+  it('lists what the account holds', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, {
+      devices: [
+        { device_id: 'MINE', display_name: 'dopje/delulu', last_seen_ts: 1 },
+        { device_id: 'PILE1', display_name: 'Butler' },
+      ],
+    });
+
+    const devices = await client.listDevices();
+
+    expect(devices.map((d) => d.device_id)).toEqual(['MINE', 'PILE1']);
+    expect(srv.lastRequest?.path).toBe('/_matrix/client/v3/devices');
+  });
+
+  it('purges what the predicate selects, and only that', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, {
+      devices: [{ device_id: 'MINE' }, { device_id: 'OLD1' }, { device_id: 'OLD2' }],
+    });
+    srv.enqueue(200, {});
+
+    const removed = await client.purgeDevices((d) => d.device_id !== 'MINE', 'secret');
+
+    expect(removed).toEqual(['OLD1', 'OLD2']);
+    const req = srv.lastRequest;
+    expect(req?.method).toBe('POST');
+    expect(req?.path).toBe('/_matrix/client/v3/delete_devices');
+    const body = JSON.parse(req?.body ?? '{}');
+    expect(body.devices).toEqual(['OLD1', 'OLD2']);
+    // The server will not delete a device on a bare token: this is the auth that lets it.
+    expect(body.auth).toMatchObject({ type: 'm.login.password', password: 'secret' });
+  });
+
+  it('sends no delete when the predicate keeps everything', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, { devices: [{ device_id: 'MINE' }] });
+
+    expect(await client.purgeDevices(() => false, 'secret')).toEqual([]);
+    expect(srv.lastRequest?.method).toBe('GET');
+  });
+});

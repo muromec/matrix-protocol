@@ -6,6 +6,7 @@ export {
   type SyncResponse,
   type SendResponse,
   type RefreshResponse,
+  type DeviceInfo,
   type LoginResponse,
   type CreateRoomRequest,
   type RtcTokenDialect,
