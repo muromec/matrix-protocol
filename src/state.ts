@@ -28,6 +28,12 @@ export interface SessionCredentials {
   accessToken: string;
   /** Present when the login asked for one.  A refresh replaces both tokens. */
   refreshToken?: string;
+  /**
+   * When the access token stops being accepted, as an absolute time in ms — the server's
+   * `expires_in_ms` added to the moment it answered.  Absent means the server said nothing, and
+   * then only a refused request can tell us the token is spent.
+   */
+  expiresAtMs?: number;
 }
 
 /** Everything a watcher carries between starts. */
@@ -71,6 +77,7 @@ export async function loadState(path: string | undefined): Promise<ClientState> 
         deviceId: s.deviceId,
         accessToken: s.accessToken,
         ...(typeof s.refreshToken === 'string' ? { refreshToken: s.refreshToken } : {}),
+        ...(typeof s.expiresAtMs === 'number' ? { expiresAtMs: s.expiresAtMs } : {}),
       };
     }
   }

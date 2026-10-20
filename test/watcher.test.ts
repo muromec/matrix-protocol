@@ -7,7 +7,7 @@
 // Run:  bun test test/watcher.test.ts
 //       npx vitest run test/watcher.test.ts
 
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -64,6 +64,7 @@ interface MockClient {
   leave: ReturnType<typeof vi.fn>;
   setPresence: ReturnType<typeof vi.fn>;
   sync: ReturnType<typeof vi.fn>;
+  setAccessToken: ReturnType<typeof vi.fn>;
 }
 
 function tick<T>(value: T): Promise<T> {
@@ -71,7 +72,7 @@ function tick<T>(value: T): Promise<T> {
 }
 
 function freshMockClient(overrides: Partial<MockClient> = {}): MockClient {
-  return {
+  const client: MockClient = {
     userId: '@butler:muromec.nl',
     accessToken: 'tok-1',
     deviceId: 'DEV-1',
@@ -83,9 +84,16 @@ function freshMockClient(overrides: Partial<MockClient> = {}): MockClient {
     join: vi.fn().mockResolvedValue(undefined),
     leave: vi.fn().mockResolvedValue(undefined),
     setPresence: vi.fn().mockResolvedValue(undefined),
+    setAccessToken: vi.fn(),
     sync: vi.fn().mockImplementation(() => tick({ next_batch: 's1', rooms: {} })),
     ...overrides,
   };
+  // The real client carries the token it authenticates with; a stand-in that only recorded a call
+  // would let a renewal look applied while the next request still used the old token.
+  client.setAccessToken.mockImplementation((token: string) => {
+    client.accessToken = token;
+  });
+  return client;
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────
@@ -624,6 +632,25 @@ describe('media messages', () => {
 // ── session ───────────────────────────────────────────────────────────────
 
 describe('session', () => {
+  // Every case states the mocks it needs from a known baseline: a case that replaces one leaves it
+  // for the next otherwise, and a leaked refusal reads as a defect in the case after it.
+  beforeEach(() => {
+    loginMock.mockReset();
+    loginMock.mockImplementation(async () => {
+      mockClient = freshMockClient();
+      return mockClient;
+    });
+    refreshMock.mockReset();
+    refreshMock.mockImplementation(async () => ({
+      access_token: 'refreshed-token',
+      refresh_token: 'rotated-refresh',
+    }));
+    fromSessionMock.mockReset();
+    fromSessionMock.mockImplementation((opts: Record<string, unknown>) => {
+      mockClient = freshMockClient({ accessToken: String(opts.accessToken) });
+      return mockClient;
+    });
+  });
   /** Boot on a state file and answer once the watcher is up. */
   async function bootOn(statePath: string): Promise<{
     watcher: MatrixWatcher;
@@ -708,6 +735,10 @@ describe('session', () => {
 
     mockClient = null!;
     const w = new MatrixWatcherCtor(makeConfig({ statePath, reconnectDelay: 1 }));
+    const errors: Array<Error> = [];
+    w.addEventListener('error', (e) =>
+      errors.push((e as CustomEvent<{ error: Error }>).detail.error),
+    );
     let opens = 0;
     let resolveSecond!: () => void;
     const reconnected = new Promise<void>((r) => {
@@ -725,6 +756,10 @@ describe('session', () => {
     expect(refreshMock.mock.calls.length).toBe(1);
     expect(refreshMock.mock.calls[0]?.[1]).toBe('r1');
     expect(loginMock.mock.calls.length).toBe(0);
+
+    // A renewal is not a failure.  A caller that treats an error as fatal would kill the transport
+    // for a token the watcher had already replaced.
+    expect(errors).toHaveLength(0);
 
     const stored = await loadState(statePath);
     expect(stored.session?.accessToken).toBe('refreshed-token');
@@ -784,5 +819,97 @@ describe('session', () => {
     // The position belongs to the account's stream, not to the credentials that just died.
     expect(resumedWith).toBe('s7');
     expect(typeof (await loadState(statePath)).syncToken).toBe('string');
+  });
+
+  it('renews a token that is about to expire before the next request', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mw-proactive-'));
+    const statePath = join(dir, 'session.json');
+    await saveState(statePath, {
+      session: {
+        userId: '@butler:muromec.nl',
+        deviceId: 'DEV-9',
+        accessToken: 'old-token',
+        refreshToken: 'r1',
+        expiresAtMs: Date.now() + 5_000,
+      },
+      syncToken: 's3',
+    });
+
+    refreshMock.mock.calls.length = 0;
+    const errors: Array<Error> = [];
+
+    // What the client walks in with, and where it resumes, as the first sync sees them.
+    let tokenAtFirstSync: string | undefined;
+    let sinceAtFirstSync: string | undefined;
+    const synced = new Promise<void>((resolve) => {
+      fromSessionMock.mockImplementation((opts: Record<string, unknown>) => {
+        mockClient = freshMockClient({ accessToken: String(opts.accessToken) });
+        mockClient.sync = vi.fn().mockImplementation(async (since?: string) => {
+          tokenAtFirstSync = mockClient.accessToken;
+          sinceAtFirstSync = since;
+          resolve();
+          return await tick({ next_batch: 's4', rooms: {} });
+        });
+        return mockClient;
+      });
+    });
+
+    mockClient = null!;
+    const w = new MatrixWatcherCtor(makeConfig({ statePath, reconnectDelay: 1 }));
+    w.addEventListener('error', (e) =>
+      errors.push((e as CustomEvent<{ error: Error }>).detail.error),
+    );
+    const running = w.start();
+    await synced;
+    w.stop();
+    await running;
+
+    // No request was refused: the renewal happened on the way in, because there was less than a
+    // margin of life left.
+    expect(refreshMock.mock.calls.length).toBe(1);
+    expect(refreshMock.mock.calls[0]?.[1]).toBe('r1');
+    expect(tokenAtFirstSync).toBe('refreshed-token');
+    expect(sinceAtFirstSync).toBe('s3');
+    expect(errors).toHaveLength(0);
+  });
+
+  it('leaves a token with life in it alone', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mw-fresh-'));
+    const statePath = join(dir, 'session.json');
+    await saveState(statePath, {
+      session: {
+        userId: '@butler:muromec.nl',
+        deviceId: 'DEV-9',
+        accessToken: 'good-token',
+        refreshToken: 'r1',
+        expiresAtMs: Date.now() + 3_600_000,
+      },
+      syncToken: 's5',
+    });
+
+    refreshMock.mock.calls.length = 0;
+
+    let tokenAtFirstSync: string | undefined;
+    const synced = new Promise<void>((resolve) => {
+      fromSessionMock.mockImplementation((opts: Record<string, unknown>) => {
+        mockClient = freshMockClient({ accessToken: String(opts.accessToken) });
+        mockClient.sync = vi.fn().mockImplementation(async () => {
+          tokenAtFirstSync = mockClient.accessToken;
+          resolve();
+          return await tick({ next_batch: 's6', rooms: {} });
+        });
+        return mockClient;
+      });
+    });
+
+    mockClient = null!;
+    const w = new MatrixWatcherCtor(makeConfig({ statePath, reconnectDelay: 1 }));
+    const running = w.start();
+    await synced;
+    w.stop();
+    await running;
+
+    expect(refreshMock.mock.calls.length).toBe(0);
+    expect(tokenAtFirstSync).toBe('good-token');
   });
 });

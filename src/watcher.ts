@@ -37,6 +37,14 @@ export interface WatcherConfig {
   deviceId?: string;
   initialDeviceDisplayName?: string;
   syncTimeout?: number;
+  /**
+   * How much life an access token must have left before a request is allowed to start on it.
+   *
+   * Three sync timeouts, or whatever is larger: a long poll must never be the thing that discovers
+   * an expired token, so the margin is measured in whole requests rather than in seconds, and a
+   * deployment that lengthens its poll lengthens the margin with it.
+   */
+  tokenMarginMs?: number;
   reconnectDelay?: number;
   /**
    * Where the session lives: the tokens, the device and the sync position, in one file.  Omitted,
@@ -135,6 +143,9 @@ export class MatrixWatcher extends EventTarget {
 
     const syncTimeout = this.#config.syncTimeout ?? 30_000;
     const reconnectDelay = this.#config.reconnectDelay ?? 5_000;
+    // A token is renewed when less than this much of it is left, and the margin is three long
+    // polls, so the two clocks cannot meet: the poll outlives nothing.
+    const tokenMargin = Math.max(this.#config.tokenMarginMs ?? 0, syncTimeout * 3);
 
     while (!signal.aborted) {
       let since: string | undefined;
@@ -159,6 +170,7 @@ export class MatrixWatcher extends EventTarget {
 
         since = await this.#storedSyncToken();
 
+        await this.#keepTokenFresh(tokenMargin);
         const initResp = await this.#client.sync(since, since ? undefined : 5000, signal);
         this.#processSync(initResp);
         since = initResp.next_batch;
@@ -169,6 +181,7 @@ export class MatrixWatcher extends EventTarget {
 
         while (!signal.aborted) {
           try {
+            await this.#keepTokenFresh(tokenMargin);
             const resp = await this.#client.sync(since, syncTimeout, signal);
             this.#processSync(resp);
             since = resp.next_batch;
@@ -184,9 +197,11 @@ export class MatrixWatcher extends EventTarget {
       } catch (err) {
         if (signal.aborted) break;
         // A refused token is not a transport failure: it is a session that has to be renewed, and
-        // the next pass of the loop does that instead of retrying the same dead token.
+        // the next pass of the loop does that instead of retrying the same dead token.  It is not
+        // reported upwards either — a caller that treats an error as fatal would take a renewal
+        // for a death, which is exactly how a five-minute token killed every transport.
         await this.#renewSpentSession(err);
-        this.#emit({ type: 'error', error: err as Error });
+        if (!isSpentToken(err)) this.#emit({ type: 'error', error: err as Error });
       }
 
       if (signal.aborted) break;
@@ -257,32 +272,62 @@ export class MatrixWatcher extends EventTarget {
       accessToken: client.accessToken,
       ...(client.refreshToken === undefined ? {} : { refreshToken: client.refreshToken }),
     };
+    if (client.accessTokenLifetimeMs !== undefined) {
+      state.session.expiresAtMs = Date.now() + client.accessTokenLifetimeMs;
+    }
     await this.#persistState();
     return client;
   }
 
   /**
+   * Exchange the refresh token for a new pair, and record when the new access token dies.
+   *
+   * Answers false when the server refused it — a spent refresh token, or none at all — which
+   * leaves the password as the only door.  The sync position is not touched.
+   */
+  async #refreshSession(): Promise<boolean> {
+    const state = await this.#stateNow();
+    const session = state.session;
+    if (!session?.refreshToken) return false;
+
+    try {
+      const issuedAt = Date.now();
+      const resp = await MatrixClient.refresh(this.#config.baseUrl, session.refreshToken);
+      session.accessToken = resp.access_token;
+      if (resp.refresh_token !== undefined) session.refreshToken = resp.refresh_token;
+      if (resp.expires_in_ms !== undefined) session.expiresAtMs = issuedAt + resp.expires_in_ms;
+      await this.#persistState();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Renew the access token when less of it is left than the margin, and hand the new one to the
+   * client.  Called before every sync, so the loop's own pace is the clock and nothing here needs
+   * a timer.  A token whose expiry the server never stated is left alone: only a refusal can
+   * report it, and that path renews as well.
+   */
+  async #keepTokenFresh(marginMs: number): Promise<void> {
+    const state = await this.#stateNow();
+    const session = state.session;
+    if (!session || session.refreshToken === undefined) return;
+    if (session.expiresAtMs === undefined) return;
+    if (session.expiresAtMs - Date.now() > marginMs) return;
+    if (!(await this.#refreshSession())) return;
+    if (this.#client) this.#client.setAccessToken(session.accessToken);
+  }
+
+  /**
    * The server refused the access token.  Refresh it when a refresh token can, else drop the
-   * credentials so the next pass logs in; either way the caller stops retrying the token that just
-   * failed.  The sync position is not part of the credentials and is never touched here.
+   * credentials so the next pass logs in; either way the caller stops retrying the dead token.
    */
   async #renewSpentSession(err: unknown): Promise<void> {
-    if (!(err instanceof MatrixError) || err.errcode !== 'M_UNKNOWN_TOKEN') return;
+    if (!isSpentToken(err)) return;
     const state = await this.#stateNow();
     if (!state.session) return;
-
-    if (state.session.refreshToken !== undefined) {
-      try {
-        const resp = await MatrixClient.refresh(this.#config.baseUrl, state.session.refreshToken);
-        state.session.accessToken = resp.access_token;
-        if (resp.refresh_token !== undefined) state.session.refreshToken = resp.refresh_token;
-        await this.#persistState();
-        return;
-      } catch {
-        // A spent or refused refresh token leaves the password as the only door.
-      }
-    }
-
+    if (await this.#refreshSession()) return;
     state.session = undefined;
     await this.#persistState();
   }
@@ -578,6 +623,11 @@ export class MatrixWatcher extends EventTarget {
 }
 
 // ── error classification ──────────────────────────────────────────────────
+
+/** A refused token: a renewal, not a transport failure. */
+function isSpentToken(err: unknown): boolean {
+  return err instanceof MatrixError && err.errcode === 'M_UNKNOWN_TOKEN';
+}
 
 function isRecoverable(err: unknown): boolean {
   if (!err) return false;

@@ -191,6 +191,8 @@ export class MatrixClient {
   #userId: string;
   #deviceId: string;
   #refreshToken?: string;
+  /** How long the token this client logged in with lasts, when the server said. */
+  #accessTokenLifetimeMs?: number;
   #currentPresence: string;
 
   private constructor(
@@ -236,6 +238,11 @@ export class MatrixClient {
     return this.#refreshToken;
   }
 
+  /** How long the access token lasts, when the server said so at login. */
+  get accessTokenLifetimeMs(): number | undefined {
+    return this.#accessTokenLifetimeMs;
+  }
+
   // ── static factory: login ──────────────────────────────────────────────
 
   /**
@@ -273,6 +280,7 @@ export class MatrixClient {
       timeout,
     );
     client.#refreshToken = resp.refresh_token;
+    if (resp.expires_in_ms !== undefined) client.#accessTokenLifetimeMs = resp.expires_in_ms;
     return client;
   }
 
@@ -310,6 +318,16 @@ export class MatrixClient {
   /** The token this client authenticates with: what a session file has to hold. */
   get accessToken(): string {
     return this.#accessToken;
+  }
+
+  /**
+   * Take a newer access token, after a refresh the caller made on this client's behalf.
+   *
+   * The client is a pipe with a token in it; the caller owns the record the token lives in, so a
+   * refresh happens out there and the result is handed in here.
+   */
+  setAccessToken(token: string): void {
+    this.#accessToken = token;
   }
 
   get baseUrl(): string {
