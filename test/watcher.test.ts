@@ -8,25 +8,41 @@
 //       npx vitest run test/watcher.test.ts
 
 import { describe, it, expect, vi } from 'vitest';
-
-// ── mock the client module ────────────────────────────────────────────────
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { loadSession, saveSession } from '../src/session.ts';
 
 let mockClient: MockClient;
+/** The mocked statics, kept by name so a case can reset or restate them without a cast. */
+let loginMock: ReturnType<typeof vi.fn>;
+let refreshMock: ReturnType<typeof vi.fn>;
+let fromSessionMock: ReturnType<typeof vi.fn>;
 
 vi.mock('../src/client.ts', () => ({
   MatrixClient: {
-    login: vi.fn().mockImplementation(async () => {
+    login: (loginMock = vi.fn().mockImplementation(async () => {
       mockClient = freshMockClient();
       return mockClient;
-    }),
+    })),
+    refresh: (refreshMock = vi.fn().mockImplementation(async () => ({
+      access_token: 'refreshed-token',
+      refresh_token: 'rotated-refresh',
+    }))),
+    fromSession: (fromSessionMock = vi.fn().mockImplementation((opts: Record<string, unknown>) => {
+      mockClient = freshMockClient({ accessToken: String(opts.accessToken) });
+      return mockClient;
+    })),
   },
   MatrixError: class MatrixError extends Error {
     errcode: string;
     status: number;
-    constructor(msg: string, errcode: string, status: number) {
-      super(msg);
-      this.errcode = errcode;
+    body: unknown;
+    constructor(status: number, errcode: string, error: string, body: unknown) {
+      super(error);
       this.status = status;
+      this.errcode = errcode;
+      this.body = body;
     }
   },
 }));
@@ -36,6 +52,9 @@ import type { MatrixWatcher, WatcherConfig } from '../src/watcher.ts';
 
 interface MockClient {
   userId: string;
+  accessToken: string;
+  refreshToken?: string;
+  deviceId: string;
   getAccountData: ReturnType<typeof vi.fn>;
   setAccountData: ReturnType<typeof vi.fn>;
   createRoom: ReturnType<typeof vi.fn>;
@@ -54,6 +73,8 @@ function tick<T>(value: T): Promise<T> {
 function freshMockClient(overrides: Partial<MockClient> = {}): MockClient {
   return {
     userId: '@butler:muromec.nl',
+    accessToken: 'tok-1',
+    deviceId: 'DEV-1',
     getAccountData: vi.fn().mockResolvedValue({}),
     setAccountData: vi.fn().mockResolvedValue(undefined),
     createRoom: vi.fn().mockRejectedValue(new Error('createRoom not stubbed')),
@@ -349,7 +370,8 @@ describe('sync loop', () => {
 
 // ── call events ────────────────────────────────────────────────────────────
 
-import { membershipEventFor, leaveEventFor } from '../src/rtc.ts';
+import { membershipEventFor } from '../src/rtc.ts';
+import { MatrixError } from '../src/client.ts';
 import type { MatrixEvent } from '../src/client.ts';
 import type { WatcherEvent } from '../src/watcher.ts';
 
@@ -596,5 +618,113 @@ describe('media messages', () => {
     expect(seen).toHaveLength(0);
 
     await stop();
+  });
+});
+
+// ── session ───────────────────────────────────────────────────────────────
+
+describe('session', () => {
+  /** Boot on a state file and answer once the watcher is up. */
+  async function bootOn(statePath: string): Promise<{
+    watcher: MatrixWatcher;
+    connected: Promise<void>;
+    stop: () => Promise<void>;
+  }> {
+    mockClient = null!;
+    const w = new MatrixWatcherCtor(makeConfig({ statePath, reconnectDelay: 1 }));
+    let resolveFirst!: () => void;
+    const connected = new Promise<void>((resolve) => {
+      resolveFirst = resolve;
+    });
+    w.addEventListener('connected', () => resolveFirst());
+    const running = w.start();
+    return {
+      watcher: w,
+      connected,
+      stop: async () => {
+        w.stop();
+        await running;
+      },
+    };
+  }
+
+  it('runs on a stored session instead of logging in', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mw-session-'));
+    const statePath = join(dir, 'session.json');
+    await saveSession(statePath, {
+      userId: '@butler:muromec.nl',
+      deviceId: 'DEV-9',
+      accessToken: 'tok-9',
+      syncToken: 's9',
+    });
+
+    loginMock.mock.calls.length = 0;
+    fromSessionMock.mock.calls.length = 0;
+
+    const booted = await bootOn(statePath);
+    await booted.connected;
+    await tick(undefined);
+    await booted.stop();
+
+    expect(loginMock.mock.calls.length).toBe(0);
+    expect(fromSessionMock.mock.calls.length).toBe(1);
+    expect(fromSessionMock.mock.calls[0]?.[0]).toMatchObject({
+      accessToken: 'tok-9',
+      deviceId: 'DEV-9',
+    });
+    expect(mockClient.sync).toHaveBeenCalledWith('s9', undefined, expect.anything());
+  });
+
+  it('refreshes a refused token and stores the rotated pair', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mw-refresh-'));
+    const statePath = join(dir, 'session.json');
+    await saveSession(statePath, {
+      userId: '@butler:muromec.nl',
+      deviceId: 'DEV-9',
+      accessToken: 'spent-token',
+      refreshToken: 'r1',
+      syncToken: 's1',
+    });
+
+    loginMock.mock.calls.length = 0;
+    refreshMock.mock.calls.length = 0;
+
+    // The stored token is refused and the refreshed one works: the refusal has to be the client's,
+    // not the first sync's, or the test is a race against which call runs first.
+    fromSessionMock.mockImplementation((opts: Record<string, unknown>) => {
+      const token = String(opts.accessToken);
+      mockClient = freshMockClient({ accessToken: token });
+      if (token === 'spent-token') {
+        mockClient.sync = vi
+          .fn()
+          .mockRejectedValue(new MatrixError(401, 'M_UNKNOWN_TOKEN', 'refused', null));
+      }
+      return mockClient;
+    });
+
+    mockClient = null!;
+    const w = new MatrixWatcherCtor(makeConfig({ statePath, reconnectDelay: 1 }));
+    let opens = 0;
+    let resolveSecond!: () => void;
+    const reconnected = new Promise<void>((r) => {
+      resolveSecond = r;
+    });
+    w.addEventListener('connected', () => {
+      opens += 1;
+      if (opens === 2) resolveSecond();
+    });
+    const running = w.start();
+    await reconnected;
+    w.stop();
+    await running;
+
+    expect(refreshMock.mock.calls.length).toBe(1);
+    expect(refreshMock.mock.calls[0]?.[1]).toBe('r1');
+    expect(loginMock.mock.calls.length).toBe(0);
+
+    const stored = await loadSession(statePath);
+    expect(stored?.accessToken).toBe('refreshed-token');
+    expect(stored?.refreshToken).toBe('rotated-refresh');
+    expect(stored?.syncToken).toBe('s1');
   });
 });

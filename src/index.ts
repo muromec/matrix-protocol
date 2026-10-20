@@ -5,11 +5,13 @@ export {
   type MatrixEvent,
   type SyncResponse,
   type SendResponse,
+  type RefreshResponse,
   type LoginResponse,
   type CreateRoomRequest,
   type RtcTokenDialect,
   MatrixError,
 } from './client.ts';
+export { loadSession, saveSession, type MatrixSession } from './session.ts';
 export { MatrixMessage, type MatrixMessageHeaders, type OutgoingMatrixMessage } from './message.ts';
 export { MatrixWatcher, type WatcherConfig, type WatcherEvent } from './watcher.ts';
 export {

@@ -51,6 +51,9 @@ export interface MatrixConfig {
 
   /** Timeout for individual HTTP requests (ms). Default 30_000. */
   requestTimeout?: number;
+
+  /** Ask for a refresh token at login: it renews the session without the password. */
+  useRefreshTokens?: boolean;
 }
 
 /** Raw Matrix event as delivered by /sync.  Only the subset of fields we
@@ -106,6 +109,17 @@ export interface LoginResponse {
   access_token: string;
   device_id: string;
   home_server: string;
+  /** Present when the login asked for one (`useRefreshTokens`). */
+  refresh_token?: string;
+  /** How long the access token lasts, when the server says. */
+  expires_in_ms?: number;
+}
+
+/** POST /refresh response.  A refresh replaces both tokens. */
+export interface RefreshResponse {
+  access_token: string;
+  refresh_token?: string;
+  expires_in_ms?: number;
 }
 
 /** Response from PUT /send. */
@@ -170,6 +184,7 @@ export class MatrixClient {
   #requestTimeout: number;
   #userId: string;
   #deviceId: string;
+  #refreshToken?: string;
   #currentPresence: string;
 
   private constructor(
@@ -185,6 +200,34 @@ export class MatrixClient {
     this.#deviceId = deviceId;
     this.#requestTimeout = requestTimeout;
     this.#currentPresence = 'online';
+  }
+
+  /**
+   * A client for a session that already exists: what a login would have returned, without the
+   * password round trip.  The caller owns the tokens and persists what a refresh gives back.
+   */
+  static fromSession(opts: {
+    baseUrl: string;
+    userId: string;
+    deviceId: string;
+    accessToken: string;
+    refreshToken?: string;
+    requestTimeout?: number;
+  }): MatrixClient {
+    const client = new MatrixClient(
+      opts.baseUrl,
+      opts.accessToken,
+      opts.userId,
+      opts.deviceId,
+      opts.requestTimeout ?? 30_000,
+    );
+    client.#refreshToken = opts.refreshToken;
+    return client;
+  }
+
+  /** The refresh token this client was built with, if any. */
+  get refreshToken(): string | undefined {
+    return this.#refreshToken;
   }
 
   // ── static factory: login ──────────────────────────────────────────────
@@ -203,6 +246,7 @@ export class MatrixClient {
       password: config.password,
     };
     body.device_id = config.deviceId ?? DEFAULT_DEVICE_ID;
+    if (config.useRefreshTokens) body.refresh_token = true;
     if (config.initialDeviceDisplayName) {
       body.initial_device_display_name = config.initialDeviceDisplayName;
     }
@@ -215,7 +259,35 @@ export class MatrixClient {
       timeout,
     )) as LoginResponse;
 
-    return new MatrixClient(baseUrl, resp.access_token, resp.user_id, resp.device_id, timeout);
+    const client = new MatrixClient(
+      baseUrl,
+      resp.access_token,
+      resp.user_id,
+      resp.device_id,
+      timeout,
+    );
+    client.#refreshToken = resp.refresh_token;
+    return client;
+  }
+
+  /**
+   * Exchange a refresh token for a new access token.
+   *
+   * The server replaces the refresh token as it hands the new access token out, so the caller must
+   * persist both or the next refresh uses a token that no longer exists.
+   */
+  static async refresh(
+    baseUrl: string,
+    refreshToken: string,
+    requestTimeout = 30_000,
+  ): Promise<RefreshResponse> {
+    return (await request(
+      'POST',
+      `${baseUrl.replace(/\/+$/, '')}/_matrix/client/v3/refresh`,
+      { refresh_token: refreshToken },
+      undefined,
+      requestTimeout,
+    )) as RefreshResponse;
   }
 
   // ── accessors ──────────────────────────────────────────────────────────
@@ -227,6 +299,11 @@ export class MatrixClient {
   /** The device ID the login was given — what an RTC membership names. */
   get deviceId(): string {
     return this.#deviceId;
+  }
+
+  /** The token this client authenticates with: what a session file has to hold. */
+  get accessToken(): string {
+    return this.#accessToken;
   }
 
   get baseUrl(): string {

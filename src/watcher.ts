@@ -12,7 +12,8 @@
 
 import { MatrixClient, MatrixError, type MatrixEvent, type SyncResponse } from './client.ts';
 import { MatrixMessage, isMediaMessageType } from './message.ts';
-import { loadSyncToken, saveSyncToken } from './sync-token.ts';
+import { loadSession, saveSession, type MatrixSession } from './session.ts';
+import { loadSyncToken } from './sync-token.ts';
 import { chain } from './data-sources/chain.ts';
 import type { DataSource, Warmable } from './data-sources/types.ts';
 import { BiDiMemorySource } from './data-sources/bi-di-memory.ts';
@@ -37,6 +38,15 @@ export interface WatcherConfig {
   initialDeviceDisplayName?: string;
   syncTimeout?: number;
   reconnectDelay?: number;
+  /**
+   * Where the session lives: the tokens, the device and the sync position, in one file.  Omitted,
+   * nothing is persisted and every start logs in with the password.
+   */
+  statePath?: string;
+  /**
+   * The token file written before the session file existed.  Read once, to seed a fresh session, so
+   * a restart does not replay events; drop the setting when no deployment carries the old file.
+   */
   syncTokenPath?: string;
 }
 
@@ -92,7 +102,9 @@ export class MatrixWatcher extends EventTarget {
   /** The underlying memory layer, shared so tests can seed it. */
   #dmMemory: BiDiMemorySource | null = null;
 
-  #syncToken: string | undefined;
+  /** The persisted session, loaded once; `null` means the next attempt logs in. */
+  #session: MatrixSession | null = null;
+  #sessionLoaded = false;
 
   /** The latest membership event per room and state key.  A call is room
    *  state, so what is held is the state, not a stream of deltas. */
@@ -128,13 +140,7 @@ export class MatrixWatcher extends EventTarget {
       let since: string | undefined;
 
       try {
-        this.#client = await MatrixClient.login({
-          baseUrl: this.#config.baseUrl,
-          userId: this.#config.userId,
-          password: this.#config.password,
-          deviceId: this.#config.deviceId,
-          initialDeviceDisplayName: this.#config.initialDeviceDisplayName,
-        });
+        this.#client = await this.#openClient();
 
         this.#readyPromise = new Promise((resolve) => {
           this.#readyResolve = resolve;
@@ -151,17 +157,13 @@ export class MatrixWatcher extends EventTarget {
         await this.#warmupCache();
         this.#readyResolve();
 
-        if (this.#syncToken === undefined) {
-          this.#syncToken = await loadSyncToken(this.#config.syncTokenPath);
-        }
-        since = this.#syncToken;
+        since = await this.#storedSyncToken();
 
         const initResp = await this.#client.sync(since, since ? undefined : 5000, signal);
         this.#processSync(initResp);
         since = initResp.next_batch;
 
-        this.#syncToken = since;
-        await saveSyncToken(this.#config.syncTokenPath, since);
+        await this.#storeSyncToken(since);
 
         if (signal.aborted) break;
 
@@ -171,8 +173,7 @@ export class MatrixWatcher extends EventTarget {
             this.#processSync(resp);
             since = resp.next_batch;
 
-            this.#syncToken = since;
-            await saveSyncToken(this.#config.syncTokenPath, since);
+            await this.#storeSyncToken(since);
           } catch (err) {
             if (isRecoverable(err)) continue;
             throw err;
@@ -182,6 +183,9 @@ export class MatrixWatcher extends EventTarget {
         break;
       } catch (err) {
         if (signal.aborted) break;
+        // A refused token is not a transport failure: it is a session that has to be renewed, and
+        // the next pass of the loop does that instead of retrying the same dead token.
+        await this.#renewSpentSession(err);
         this.#emit({ type: 'error', error: err as Error });
       }
 
@@ -189,6 +193,97 @@ export class MatrixWatcher extends EventTarget {
       this.#emit({ type: 'disconnected' });
       await this.#sleep(reconnectDelay, signal);
     }
+  }
+
+  // ── session ───────────────────────────────────────────────────────────────
+
+  /** The session this watcher runs on, read from disk once. */
+  async #sessionState(): Promise<MatrixSession | null> {
+    if (!this.#sessionLoaded) {
+      this.#sessionLoaded = true;
+      this.#session = await loadSession(this.#config.statePath);
+      if (this.#session && this.#session.syncToken === undefined && this.#config.syncTokenPath) {
+        const legacy = await loadSyncToken(this.#config.syncTokenPath);
+        if (legacy !== undefined) {
+          this.#session.syncToken = legacy;
+          await this.#persistSession();
+        }
+      }
+    }
+    return this.#session;
+  }
+
+  async #persistSession(): Promise<void> {
+    if (!this.#session) return;
+    await saveSession(this.#config.statePath, this.#session);
+  }
+
+  async #storedSyncToken(): Promise<string | undefined> {
+    const session = await this.#sessionState();
+    return session?.syncToken;
+  }
+
+  async #storeSyncToken(token: string): Promise<void> {
+    const session = await this.#sessionState();
+    if (!session) return;
+    session.syncToken = token;
+    await this.#persistSession();
+  }
+
+  /** A client built on the stored session, or a fresh login when there is none. */
+  async #openClient(): Promise<MatrixClient> {
+    const session = await this.#sessionState();
+    if (session) {
+      return MatrixClient.fromSession({
+        baseUrl: this.#config.baseUrl,
+        userId: session.userId || this.#config.userId,
+        deviceId: session.deviceId,
+        accessToken: session.accessToken,
+        ...(session.refreshToken === undefined ? {} : { refreshToken: session.refreshToken }),
+      });
+    }
+
+    const client = await MatrixClient.login({
+      baseUrl: this.#config.baseUrl,
+      userId: this.#config.userId,
+      password: this.#config.password,
+      deviceId: this.#config.deviceId,
+      initialDeviceDisplayName: this.#config.initialDeviceDisplayName,
+      useRefreshTokens: true,
+    });
+    this.#sessionLoaded = true;
+    this.#session = {
+      userId: client.userId,
+      deviceId: client.deviceId,
+      accessToken: client.accessToken,
+      ...(client.refreshToken === undefined ? {} : { refreshToken: client.refreshToken }),
+    };
+    await this.#persistSession();
+    return client;
+  }
+
+  /**
+   * The server refused the access token.  Refresh it when a refresh token can, else forget it so
+   * the next pass logs in; either way the caller stops retrying the token that just failed.
+   */
+  async #renewSpentSession(err: unknown): Promise<void> {
+    if (!(err instanceof MatrixError) || err.errcode !== 'M_UNKNOWN_TOKEN') return;
+    const session = await this.#sessionState();
+    if (!session) return;
+
+    if (session.refreshToken !== undefined) {
+      try {
+        const resp = await MatrixClient.refresh(this.#config.baseUrl, session.refreshToken);
+        session.accessToken = resp.access_token;
+        if (resp.refresh_token !== undefined) session.refreshToken = resp.refresh_token;
+        await this.#persistSession();
+        return;
+      } catch {
+        // A spent or refused refresh token leaves the password as the only door.
+      }
+    }
+
+    this.#session = null;
   }
 
   stop(): void {

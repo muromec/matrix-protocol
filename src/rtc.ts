@@ -204,7 +204,7 @@ export interface RtcMembershipEvent {
  *  already uses, so that the clients already in the call can read us.  The
  *  oldest one is the fallback because it is what the clients here write. */
 export function membershipEventTypeFor(events: MatrixEvent[]): string {
-  for (const type of [...RTC_MEMBER_TYPES].reverse()) {
+  for (const type of RTC_MEMBER_TYPES.toReversed()) {
     if (events.some((e) => e.type === type)) return type;
   }
   return RTC_MEMBER_TYPES[0];
@@ -223,7 +223,7 @@ const MODERN_MEMBER_TYPE = 'm.rtc.member';
  * older one when there is nobody yet, because the clients in the wild are old.
  */
 export function rtcTokenDialectInRoom(events: MatrixEvent[]): RtcTokenDialect {
-  for (const type of [...RTC_MEMBER_TYPES].reverse()) {
+  for (const type of RTC_MEMBER_TYPES.toReversed()) {
     const inCall = events.some((e) => e.type === type && readRtcMembership(e)?.inCall === true);
     if (inCall) return type === MODERN_MEMBER_TYPE ? 'modern' : 'legacy';
   }

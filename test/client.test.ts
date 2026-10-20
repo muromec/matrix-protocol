@@ -368,7 +368,6 @@ describe('sync', () => {
 // ── send ───────────────────────────────────────────────────────────────────
 
 describe('send', () => {
-
   it('gives two clients distinct transaction ids, so a restart cannot be read as a retry', async () => {
     // A restart builds a second client for the same user and the same room.  A counter of its own
     // starts at zero again, and a server that has seen that number under this device answers with
