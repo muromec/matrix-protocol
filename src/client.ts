@@ -677,6 +677,61 @@ export class MatrixClient {
   }
 
   /**
+   * Put bytes in this homeserver's media repository and answer the `mxc://` URL that names them.
+   *
+   * Two endpoints exist and a homeserver may serve one or both: the spec-current
+   * `/_matrix/client/v1/media/upload` (MSC3916) and the legacy `/_matrix/media/v3/upload`.  The
+   * legacy path is tried only when the first answers 404 or 405 — a refusal (401, 403, 413) is
+   * reported rather than retried elsewhere, because a second attempt would only hide it.
+   *
+   * A file past the cap is refused before anything is sent: the cap is the same one a download is
+   * held to, and it is a safety bound rather than a policy about what is worth sending.
+   */
+  async uploadMedia(
+    data: Uint8Array,
+    contentType: string,
+    filename = 'upload',
+    options?: { maxBytes?: number },
+  ): Promise<string> {
+    const max = options?.maxBytes ?? MAX_MEDIA_BYTES;
+    if (data.byteLength > max) {
+      throw new Error(
+        `uploadMedia: ${data.byteLength} bytes is too large for this client (limit ${max} bytes)`,
+      );
+    }
+
+    const query = `?filename=${encodeURIComponent(filename)}`;
+    const endpoints = [
+      `${this.#baseUrl}/_matrix/client/v1/media/upload${query}`,
+      `${this.#baseUrl}/_matrix/media/v3/upload${query}`,
+    ];
+
+    for (const [index, url] of endpoints.entries()) {
+      try {
+        const answer = await postBytes(
+          url,
+          data,
+          contentType,
+          this.#accessToken,
+          this.#requestTimeout,
+        );
+        const uri = (answer as { content_uri?: unknown }).content_uri;
+        if (typeof uri !== 'string' || !uri.startsWith('mxc://')) {
+          throw new Error(`uploadMedia: ${url} answered without a content_uri`);
+        }
+        return uri;
+      } catch (error) {
+        const last = index === endpoints.length - 1;
+        const missingEndpoint =
+          error instanceof MatrixError && (error.status === 404 || error.status === 405);
+        if (last || !missingEndpoint) throw error;
+      }
+    }
+
+    throw new Error('uploadMedia: no upload endpoint answered');
+  }
+
+  /**
    * Write a room state event.  An empty `stateKey` is the type's default key.
    * Returns the event ID.
    */
@@ -901,6 +956,53 @@ async function request<T>(
   }
 
   if (res.ok) return parsed as T;
+
+  const err = parsed as Record<string, unknown>;
+  throw new MatrixError(
+    res.status,
+    (err.errcode as string) ?? 'M_UNKNOWN',
+    (err.error as string) ?? `HTTP ${res.status}`,
+    parsed,
+  );
+}
+
+/**
+ * POST bytes, and read the answer as Matrix JSON.
+ *
+ * The JSON path goes through `request`, which builds a JSON body and content type; an upload is
+ * the one call whose body is the file itself, so it keeps its own headers and its own error.
+ */
+async function postBytes(
+  urlString: string,
+  data: Uint8Array,
+  contentType: string,
+  token: string | undefined,
+  timeoutMs: number,
+): Promise<unknown> {
+  let res: Response;
+  try {
+    res = await fetch(urlString, {
+      method: 'POST',
+      headers: {
+        ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+        'content-type': contentType,
+      },
+      body: data,
+      signal: signalFor(timeoutMs),
+    });
+  } catch (err) {
+    throw transportError(err);
+  }
+
+  const raw = await res.text();
+  let parsed: unknown;
+  try {
+    parsed = raw.length > 0 ? JSON.parse(raw) : {};
+  } catch {
+    throw new Error(`Matrix: invalid JSON response: ${raw.slice(0, 200)}`);
+  }
+
+  if (res.ok) return parsed;
 
   const err = parsed as Record<string, unknown>;
   throw new MatrixError(

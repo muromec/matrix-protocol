@@ -950,3 +950,57 @@ describe('devices', () => {
     expect(srv.lastRequest?.method).toBe('GET');
   });
 });
+
+// ── uploadMedia ────────────────────────────────────────────────────────────
+
+describe('uploadMedia', () => {
+  it('puts the bytes in the media repository and answers the mxc url', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, { content_uri: 'mxc://muromec.nl/uploaded1' });
+
+    const uri = await client.uploadMedia(
+      new TextEncoder().encode('PNGDATA'),
+      'image/png',
+      'diagram.png',
+    );
+
+    expect(uri).toBe('mxc://muromec.nl/uploaded1');
+    expect(srv.lastRequest?.method).toBe('POST');
+    expect(srv.lastRequest?.path).toBe('/_matrix/client/v1/media/upload?filename=diagram.png');
+    expect(srv.lastRequest?.headers.authorization).toBe('Bearer tok_test');
+    expect(srv.lastRequest?.headers['content-type']).toBe('image/png');
+    expect(srv.lastRequest?.body).toBe('PNGDATA');
+  });
+
+  it('falls back to the legacy path when this homeserver has no client media endpoint', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(404, { errcode: 'M_UNRECOGNIZED', error: 'Unrecognized request' });
+    srv.enqueue(200, { content_uri: 'mxc://muromec.nl/uploaded2' });
+
+    const uri = await client.uploadMedia(new Uint8Array([1]), 'image/png', 'x.png');
+
+    expect(uri).toBe('mxc://muromec.nl/uploaded2');
+    expect(srv.lastRequest?.path).toBe('/_matrix/media/v3/upload?filename=x.png');
+  });
+
+  it('refuses an answer that names no mxc url', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, { file_id: 'abc' });
+
+    await expect(client.uploadMedia(new Uint8Array([1]), 'image/png', 'x.png')).rejects.toThrow(
+      /content_uri/,
+    );
+  });
+
+  it('refuses bytes over the limit before it sends anything', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+
+    await expect(
+      client.uploadMedia(new Uint8Array(8), 'image/png', 'x.png', { maxBytes: 4 }),
+    ).rejects.toThrow(/too large/i);
+  });
+});
