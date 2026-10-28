@@ -754,6 +754,49 @@ export class MatrixClient {
     return resp.event_id;
   }
 
+  /**
+   * Take a message back: strip its content for everyone reading the room, leaving a tombstone.
+   *
+   * Matrix's word for it is redaction, and it is narrower than deletion — the server keeps the
+   * event and a client shows that something was removed.  The sender may redact what it sent;
+   * anybody else needs power in the room, and the server rules on that rather than this method.
+   */
+  async redact(roomId: string, eventId: string, reason?: string): Promise<string> {
+    const txnId = `${Date.now()}-${txnSeq++}`;
+    const url =
+      `${this.#baseUrl}/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}` +
+      `/redact/${encodeURIComponent(eventId)}/${txnId}`;
+    const resp = (await request(
+      'PUT',
+      url,
+      reason === undefined ? {} : { reason },
+      this.#accessToken,
+      this.#requestTimeout,
+    )) as SendResponse;
+    return resp.event_id;
+  }
+
+  /**
+   * Rewrite a message this client sent.
+   *
+   * An edit is two things at once: an `m.replace` relation naming the original, and the new text
+   * carried twice — as this event's own `body`, and inside `m.new_content`.  A client that does not
+   * render edits then shows the new text as an ordinary message instead of the old one twice; a
+   * client that does renders one message that says the new thing.
+   */
+  async editText(roomId: string, eventId: string, body: string, html?: string): Promise<string> {
+    const next: Record<string, unknown> = { msgtype: 'm.text', body };
+    if (html !== undefined) {
+      next['format'] = 'org.matrix.custom.html';
+      next['formatted_body'] = html;
+    }
+    return this.send(roomId, 'm.room.message', {
+      ...next,
+      'm.new_content': next,
+      'm.relates_to': { rel_type: 'm.replace', event_id: eventId },
+    });
+  }
+
   // ── MatrixRTC ─────────────────────────────────────────────────────────────
 
   /**

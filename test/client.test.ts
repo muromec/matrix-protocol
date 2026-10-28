@@ -1004,3 +1004,36 @@ describe('uploadMedia', () => {
     ).rejects.toThrow(/too large/i);
   });
 });
+
+describe('taking a message back and rewriting one', () => {
+  it('redacts the event it is given, at the redact endpoint', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, { event_id: '$redaction' });
+
+    const id = await client.redact('!r:hs', '$target', 'sent by mistake');
+
+    expect(id).toBe('$redaction');
+    expect(srv.lastRequest?.method).toBe('PUT');
+    expect(srv.lastRequest?.path).toContain('/rooms/!r%3Ahs/redact/%24target/');
+    expect(JSON.parse(srv.lastRequest?.body ?? '{}')).toEqual({ reason: 'sent by mistake' });
+  });
+
+  it('edits as an m.replace relation carrying the new text twice', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, { event_id: '$edit' });
+
+    const id = await client.editText('!r:hs', '$target', 'the corrected words');
+
+    expect(id).toBe('$edit');
+    expect(srv.lastRequest?.path).toContain('/send/m.room.message/');
+    const body = JSON.parse(srv.lastRequest?.body ?? '{}');
+    expect(body).toMatchObject({
+      msgtype: 'm.text',
+      body: 'the corrected words',
+      'm.new_content': { msgtype: 'm.text', body: 'the corrected words' },
+      'm.relates_to': { rel_type: 'm.replace', event_id: '$target' },
+    });
+  });
+});

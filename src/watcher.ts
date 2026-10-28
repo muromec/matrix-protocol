@@ -56,6 +56,23 @@ export interface WatcherConfig {
    * a restart does not replay events; drop the setting when no deployment carries the old file.
    */
   syncTokenPath?: string;
+  /**
+   * The room event types this watcher hands over, in the order a caller wrote them.
+   *
+   * `m.room.message` alone by default, which is what it has always been: a caller that wants a
+   * widget's own events, a poll's answers or the room's state names them here, and gets the whole
+   * event on `message.event`.
+   */
+  eventTypes?: readonly string[];
+  /** Skip events this account sent.  Default true; false is for a caller that wants its own back. */
+  ignoreOwn?: boolean;
+  /**
+   * Where this library's own lines go.
+   *
+   * A caller routes them to the logger it already has — the harness names them `matrix:<persona>`
+   * — so nothing here writes to a global.  Without one they go to the console under `DEBUG`.
+   */
+  debugSink?: (line: string) => void;
 }
 
 export interface WatcherEvent {
@@ -97,6 +114,9 @@ const debugLog = (...args: unknown[]) => {
 
 export class MatrixWatcher extends EventTarget {
   #config: WatcherConfig;
+  /** The event types this watcher hands over, and whether this account's own are skipped. */
+  #wantedTypes: Set<string>;
+  #ignoreOwn: boolean;
   #client: MatrixClient | null = null;
   #abortController: AbortController | null = null;
 
@@ -121,6 +141,8 @@ export class MatrixWatcher extends EventTarget {
   constructor(config: WatcherConfig) {
     super();
     this.#config = config;
+    this.#wantedTypes = new Set(config.eventTypes ?? ['m.room.message']);
+    this.#ignoreOwn = config.ignoreOwn ?? true;
     this.#readyPromise = new Promise((resolve) => {
       this.#readyResolve = resolve;
     });
@@ -386,7 +408,12 @@ export class MatrixWatcher extends EventTarget {
         const events = [...(roomData?.state?.events ?? []), ...(roomData?.timeline?.events ?? [])];
 
         for (const event of events) {
-          if (this.#seenEvents.has(event.event_id)) continue;
+          if (this.#seenEvents.has(event.event_id)) {
+            // Said out loud rather than swallowed: the sync cursor is what prevents a replay, so
+            // every time this fires is evidence about whether the set earns its memory.
+            this.#say(`[watcher] ${event.event_id} was already seen — dropping it (${event.type})`);
+            continue;
+          }
           this.#trackSeen(event.event_id);
 
           if (isRtcMemberEvent(event)) {
@@ -394,18 +421,21 @@ export class MatrixWatcher extends EventTarget {
             continue;
           }
 
-          if (event.sender === this.#client.userId) continue;
-          if (event.type !== 'm.room.message') continue;
-
-          const msgtype = event.content?.msgtype as string | undefined;
-          if (msgtype !== 'm.text' && msgtype !== 'm.notice' && !isMediaMessageType(msgtype)) {
-            continue;
-          }
+          if (!this.#wantedTypes.has(event.type)) continue;
+          if (this.#ignoreOwn && event.sender === this.#client.userId) continue;
 
           const msg = MatrixMessage.fromEvent(event, roomId);
-          // A file is worth handing on even with no words beside it.  An event that carries
-          // neither is nothing to report.
-          if (msg.text.length === 0 && !msg.media) continue;
+
+          // Inside a message, words and files are what is worth handing on.  Any other event type
+          // was asked for by name, so it goes over whatever it holds — its content is on
+          // `msg.event`, and a poll answer has no body at all.
+          if (event.type === 'm.room.message') {
+            const msgtype = event.content?.msgtype as string | undefined;
+            if (msgtype !== 'm.text' && msgtype !== 'm.notice' && !isMediaMessageType(msgtype)) {
+              continue;
+            }
+            if (msg.text.length === 0 && !msg.media) continue;
+          }
 
           this.#emit({ type: 'message', message: msg, roomId });
         }
@@ -548,6 +578,13 @@ export class MatrixWatcher extends EventTarget {
   async #joinRoom(roomId: string): Promise<void> {
     if (!this.#client) return;
     await this.#client.join(roomId);
+  }
+
+  /** Say something: to the caller's sink when it gave one, otherwise the console under DEBUG. */
+  #say(line: string): void {
+    const sink = this.#config.debugSink;
+    if (sink) sink(line);
+    else debugLog(line);
   }
 
   #trackSeen(eventId: string): void {

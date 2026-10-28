@@ -427,13 +427,14 @@ const LEFT_EVENT = {
 async function bootWithSync(
   responses: unknown[],
   setup?: (watcher: MatrixWatcher) => Promise<void>,
+  config: Partial<WatcherConfig> = {},
+  capture: Array<WatcherEvent['type']> = ['call', 'ring'],
 ): Promise<{ watcher: MatrixWatcher; events: WatcherEvent[]; stop: () => Promise<void> }> {
   mockClient = null!;
 
-  const w = new MatrixWatcherCtor(makeConfig({ reconnectDelay: 1 }));
+  const w = new MatrixWatcherCtor(makeConfig({ reconnectDelay: 1, ...config }));
   const events: WatcherEvent[] = [];
-  w.on('call', (e) => events.push(e));
-  w.on('ring', (e) => events.push(e));
+  for (const kind of capture) w.on(kind, (e) => events.push(e));
 
   const startPromise = w.start();
   // Not the watcher's ready promise: the loop replaces it before resolving, so
@@ -911,5 +912,112 @@ describe('session', () => {
 
     expect(refreshMock.mock.calls.length).toBe(0);
     expect(tokenAtFirstSync).toBe('good-token');
+  });
+});
+
+// ── what the watcher hands over ────────────────────────────────────────────
+//
+// The caller names the room event types it wants; everything else is dropped as it always was.
+// Two read-outs depend on this: a widget's own events, and a poll's answers.
+
+function textEvent(id: string, sender: string, body = 'hello'): MatrixEvent {
+  return {
+    type: 'm.room.message',
+    sender,
+    content: { msgtype: 'm.text', body },
+    event_id: id,
+    room_id: '!r:ex.com',
+    origin_server_ts: 3,
+  } as MatrixEvent;
+}
+
+const POLL_START = {
+  type: 'm.poll.start',
+  sender: '@alice:ex.com',
+  content: {
+    'm.text': 'Lunch?\n1. Pizza\n2. Soup',
+    'm.poll.start': { question: { 'm.text': 'Lunch?' }, answers: [] },
+  },
+  event_id: '$poll',
+  room_id: '!r:ex.com',
+  origin_server_ts: 4,
+} as MatrixEvent;
+
+const POLL_VOTE = {
+  type: 'm.poll.response',
+  sender: '@alice:ex.com',
+  content: {
+    'm.poll.response': { answers: ['a1'] },
+    'm.relates_to': { rel_type: 'm.reference', event_id: '$poll' },
+  },
+  event_id: '$vote',
+  room_id: '!r:ex.com',
+  origin_server_ts: 5,
+} as MatrixEvent;
+
+describe('the events a watcher hands over', () => {
+  it('is m.room.message alone unless the caller names more', async () => {
+    const { events, stop } = await bootWithSync(
+      [joinSync([], [textEvent('$text', '@alice:ex.com'), POLL_START, POLL_VOTE])],
+      undefined,
+      {},
+      ['message'],
+    );
+
+    expect(events.map((e) => e.message?.event?.type)).toEqual(['m.room.message']);
+    await stop();
+  });
+
+  it('delivers a type the caller named, with the whole event on it', async () => {
+    const { events, stop } = await bootWithSync(
+      [joinSync([], [textEvent('$text', '@alice:ex.com'), POLL_VOTE])],
+      undefined,
+      { eventTypes: ['m.room.message', 'm.poll.response'] },
+      ['message'],
+    );
+
+    const votes = events.filter((e) => e.message?.event?.type === 'm.poll.response');
+    expect(votes).toHaveLength(1);
+    // A poll answer has no body at all: the content travels on the event, and the empty text is
+    // not a reason to drop it.
+    expect(votes[0].message?.event?.content).toMatchObject({
+      'm.poll.response': { answers: ['a1'] },
+    });
+    await stop();
+  });
+
+  it('skips this account\u2019s own events unless it is asked not to', async () => {
+    const ours = textEvent('$mine', '@butler:muromec.nl', 'my own words');
+    const quiet = await bootWithSync([joinSync([], [ours])], undefined, {}, ['message']);
+    expect(quiet.events).toHaveLength(0);
+    await quiet.stop();
+
+    const loud = await bootWithSync([joinSync([], [ours])], undefined, { ignoreOwn: false }, [
+      'message',
+    ]);
+    expect(loud.events).toHaveLength(1);
+    expect(loud.events[0].message?.text).toBe('my own words');
+    await loud.stop();
+  });
+});
+
+describe('an event already seen', () => {
+  it('is dropped with a warning, so the set can be judged rather than assumed', async () => {
+    const lines: string[] = [];
+    const event = textEvent('$repeat', '@alice:ex.com', 'said once');
+
+    const { events, stop } = await bootWithSync(
+      [joinSync([], [event]), joinSync([], [event])],
+      undefined,
+      { debugSink: (line) => lines.push(line) },
+      ['message'],
+    );
+
+    expect(events).toHaveLength(1);
+    expect(lines.some((line) => line.includes('$repeat') && line.includes('already seen'))).toBe(
+      true,
+    );
+
+    await stop();
   });
 });
