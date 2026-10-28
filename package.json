@@ -1,6 +1,6 @@
 {
   "name": "matrix-protocol",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Zero-dependency Matrix CS API client for bot use \u2014 login, sync, send, room management",
   "type": "module",
   "main": "./dist/index.js",

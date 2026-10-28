@@ -346,6 +346,27 @@ export class MatrixClient {
    * Returns parsed SyncResponse.  The caller should loop, passing
    * `next_batch` as `since` on each iteration.
    */
+  /**
+   * The room event types this client asks the server for.
+   *
+   * The sync filter is not a courtesy: the homeserver only sends what it names, so a type missing
+   * here never reaches the client at all — no amount of filtering on this side can bring it back.
+   * A watcher sets this from the types its caller asked for; the defaults are what a chat client
+   * needs and nothing more.
+   */
+  #syncFilterTypes: string[] = ['m.room.message', 'm.room.member', ...RTC_MEMBER_TYPES];
+
+  /**
+   * Ask the server for these room event types as well.
+   *
+   * Additive and idempotent: the message, member and call types a sync needs are always included,
+   * because dropping one of them breaks a feature quietly.
+   */
+  setSyncFilterTypes(types: readonly string[]): void {
+    const wanted = new Set([...this.#syncFilterTypes, ...types]);
+    this.#syncFilterTypes = [...wanted];
+  }
+
   async sync(since?: string, timeoutMs = 30_000, signal?: AbortSignal): Promise<SyncResponse> {
     const params = new URLSearchParams();
     params.set('timeout', String(timeoutMs));
@@ -358,10 +379,12 @@ export class MatrixClient {
         presence: { types: [] },
         account_data: { types: ['m.direct'] },
         room: {
-          timeline: { types: ['m.room.message', 'm.room.member', ...RTC_MEMBER_TYPES] },
-          // A call is room state: this is what tells us about one that is
-          // already up when the watcher starts.
-          state: { types: RTC_MEMBER_TYPES },
+          // What the caller asked for, plus what a sync always needs.  A type the server is
+          // not asked for is a type this client will never see — the filter is not a courtesy.
+          timeline: { types: this.#syncFilterTypes },
+          // A call is room state: this is what tells us about one that is already up when the
+          // watcher starts, and the same list is what carries a widget.
+          state: { types: this.#syncFilterTypes },
         },
       }),
     );

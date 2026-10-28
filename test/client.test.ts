@@ -1037,3 +1037,26 @@ describe('taking a message back and rewriting one', () => {
     });
   });
 });
+
+describe('what the sync asks the server for', () => {
+  it('names the event types the caller asked for, and keeps the ones a sync needs', async () => {
+    const srv = await newServer();
+    const client = await loginAndGetClient(srv);
+    srv.enqueue(200, { next_batch: 's1', rooms: {} });
+
+    client.setSyncFilterTypes(['org.matrix.msc3381.poll.response']);
+    await client.sync(undefined, 0);
+
+    const filter = JSON.parse(
+      new URL('http://x' + (srv.lastRequest?.path ?? '')).searchParams.get('filter') ?? '{}',
+    ) as { room?: { timeline?: { types?: string[] }; state?: { types?: string[] } } };
+    const types = filter.room?.timeline?.types ?? [];
+
+    expect(types).toContain('org.matrix.msc3381.poll.response');
+    // The ones a sync always needs are not dropped by asking for more.
+    expect(types).toContain('m.room.message');
+    expect(types).toContain('m.room.member');
+    // State too: a widget is state, and the initial sync's state block is where it arrives.
+    expect(filter.room?.state?.types ?? []).toContain('org.matrix.msc3381.poll.response');
+  });
+});

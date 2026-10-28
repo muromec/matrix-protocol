@@ -65,6 +65,8 @@ interface MockClient {
   setPresence: ReturnType<typeof vi.fn>;
   sync: ReturnType<typeof vi.fn>;
   setAccessToken: ReturnType<typeof vi.fn>;
+  /** Where the caller's event types go: the sync filter has to name them for the server. */
+  setSyncFilterTypes: ReturnType<typeof vi.fn>;
 }
 
 function tick<T>(value: T): Promise<T> {
@@ -85,6 +87,7 @@ function freshMockClient(overrides: Partial<MockClient> = {}): MockClient {
     leave: vi.fn().mockResolvedValue(undefined),
     setPresence: vi.fn().mockResolvedValue(undefined),
     setAccessToken: vi.fn(),
+    setSyncFilterTypes: vi.fn(),
     sync: vi.fn().mockImplementation(() => tick({ next_batch: 's1', rooms: {} })),
     ...overrides,
   };

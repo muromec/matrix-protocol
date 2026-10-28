@@ -174,6 +174,9 @@ export class MatrixWatcher extends EventTarget {
 
       try {
         this.#client = await this.#openClient();
+        // The server only sends the types the sync filter names, so the caller's list has to
+        // reach it — a client-side filter cannot recover an event the server never sent.
+        this.#client.setSyncFilterTypes(this.#config.eventTypes ?? []);
 
         this.#readyPromise = new Promise((resolve) => {
           this.#readyResolve = resolve;
@@ -264,7 +267,13 @@ export class MatrixWatcher extends EventTarget {
     await this.#persistState();
   }
 
-  /** A client built on the stored credentials, or a fresh login when there are none. */
+  /**
+   * A client built on the stored credentials, or a fresh login when there are none.
+   *
+   * The caller's event types are handed to the client here, because they have to reach the server:
+   * a type the sync filter does not name is never sent, and no amount of filtering on this side can
+   * recover it.
+   */
   async #openClient(): Promise<MatrixClient> {
     const state = await this.#stateNow();
     if (state.session) {
